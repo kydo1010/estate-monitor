@@ -15,7 +15,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update
 from src.config import BUSAN_DISTRICT_CODES, UNSOLD_SPIKE_THRESHOLD_PCT
 from src.db import (
     get_avg_price_by_district, get_session,
-    UnsoldHousing, BuildingPermit, PriceCapZone, Trade,
+    UnsoldHousing, BuildingPermit, Trade,
 )
 
 # ---------------------------------------------------------------------------
@@ -116,13 +116,6 @@ def load_permit_df():
                                "세대수": r.household_count, "시행사": r.developer,
                                "시공사": r.contractor} for r in rows])
 
-def load_cap_df():
-    with get_session() as s:
-        rows = s.query(PriceCapZone).all()
-        return pd.DataFrame([{"지역구": r.district, "지정일": r.designated_date,
-                               "해제일": r.released_date or "-", "상태": r.status}
-                              for r in rows])
-
 def load_trend_df():
     with get_session() as s:
         rows = s.query(Trade).all()
@@ -136,7 +129,6 @@ def load_trend_df():
 unsold_df = load_unsold_df()
 price_df  = load_price_df()
 permit_df = load_permit_df()
-cap_df    = load_cap_df()
 trend_df  = load_trend_df()
 
 n_spike    = int(unsold_df["급증여부"].sum()) if not unsold_df.empty else 0
@@ -306,41 +298,14 @@ def build_tab_permit(df):
     ])
 
 
-def build_tab_cap(df):
-    n_a = len(df[df["상태"]=="지정"]) if not df.empty else 0
-    n_r = len(df[df["상태"]=="해제"]) if not df.empty else 0
-    dd  = df.copy()
-    dd["지정일"] = dd["지정일"].astype(str); dd["해제일"] = dd["해제일"].astype(str)
-    cond = [*TABLE_STYLE["style_data_conditional"],
-            {"if":{"filter_query":'{상태} = "지정"',"column_id":"상태"},"color":C["danger"],"fontWeight":"700"},
-            {"if":{"filter_query":'{상태} = "해제"',"column_id":"상태"},"color":C["ok"],"fontWeight":"700"}]
-    return html.Div([
-        html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
-                 children=[kpi("현재 지정", n_a, C["danger"], "분양가상한제 적용 중"),
-                            kpi("해제 완료", n_r, C["ok"])]),
-        html.Div(style=CARD, children=[
-            html.P("분양가상한제 지정·해제 이력",
-                   style={"color":C["muted"],"fontSize":"12px","margin":"0 0 16px"}),
-            dash_table.DataTable(data=dd.to_dict("records"),
-                columns=[{"name":c,"id":c} for c in dd.columns],
-                style_data_conditional=cond,
-                **{k:v for k,v in TABLE_STYLE.items() if k!="style_data_conditional"})
-            if not dd.empty else html.P("데이터 없음", style={"color":C["muted"]}),
-        ]),
-    ])
-
-
-def build_tab_map(unsold_df, price_df, permit_df, cap_df):
+def build_tab_map(unsold_df, price_df, permit_df):
     fig = build_map_figure(unsold_df, price_df)
     return html.Div([
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
                  children=[kpi("부산 평균 거래가",
                                f"{int(price_df['평균거래가'].mean()):,}만원" if not price_df.empty else "-",
                                C["accent"]),
-                            kpi("급증 구·군", n_spike, C["danger"], "미분양 30%↑"),
-                            kpi("분양가상한제 지정",
-                                len(cap_df[cap_df["상태"]=="지정"]) if not cap_df.empty else 0,
-                                C["ok"])]),
+                            kpi("급증 구·군", n_spike, C["danger"], "미분양 30%↑")]),
         html.Div(style={"display":"grid","gridTemplateColumns":"1fr 380px","gap":"16px",
                         "alignItems":"start"}, children=[
             # 지도
@@ -407,7 +372,6 @@ app.layout = html.Div(
                 dcc.Tab(label="🔔  미분양 알림", value="tab-unsold", style=TAB_S, selected_style=TAB_A),
                 dcc.Tab(label="📊  거래가 분석", value="tab-price",  style=TAB_S, selected_style=TAB_A),
                 dcc.Tab(label="🏗  착공·허가",   value="tab-permit", style=TAB_S, selected_style=TAB_A),
-                dcc.Tab(label="🚧  규제 모니터", value="tab-cap",    style=TAB_S, selected_style=TAB_A),
             ], style={"border":"none","backgroundColor":"transparent"},
                colors={"border":"transparent","primary":C["accent"],"background":C["surface"]}),
         ]),
@@ -426,11 +390,10 @@ app.layout = html.Div(
 
 @app.callback(Output("tab-content", "children"), Input("main-tabs", "value"))
 def render_tab(tab):
-    if tab == "tab-map":    return build_tab_map(unsold_df, price_df, permit_df, cap_df)
+    if tab == "tab-map":    return build_tab_map(unsold_df, price_df, permit_df)
     if tab == "tab-unsold": return build_tab_unsold(unsold_df)
     if tab == "tab-price":  return build_tab_price(price_df, trend_df)
     if tab == "tab-permit": return build_tab_permit(permit_df)
-    if tab == "tab-cap":    return build_tab_cap(cap_df)
     return html.Div()
 
 
@@ -453,12 +416,10 @@ def map_click_panel(click_data):
     p_row = price_df[price_df["지역구"] == gu_name]
     pm_rows = permit_df[permit_df["지역구"] == gu_name].sort_values("인허가일", ascending=False).head(5).copy()
     pm_rows["인허가일"] = pm_rows["인허가일"].astype(str)
-    c_rows = cap_df[cap_df["지역구"] == gu_name]
 
     unsold_count  = int(u_row["미분양세대수"].values[0]) if not u_row.empty else "-"
     change_rate   = u_row["증감률"].values[0] if not u_row.empty else None
     avg_price     = int(p_row["평균거래가"].values[0]) if not p_row.empty else None
-    cap_status    = c_rows["상태"].values[0] if not c_rows.empty else "해당 없음"
 
     spike = (change_rate or 0) >= UNSOLD_SPIKE_THRESHOLD_PCT
 
@@ -498,16 +459,6 @@ def map_click_panel(click_data):
         html.Div(style={**CARD,"marginBottom":"16px","padding":"12px 16px"}, children=[
             stat_row("최근 6개월 평균",
                      f"{avg_price:,}만원" if avg_price else "-", C["accent"]),
-        ]),
-
-        # 규제
-        html.P("규제 현황", style={"color":C["muted"],"fontSize":"11px",
-                                   "letterSpacing":"0.1em","margin":"0 0 4px",
-                                   "textTransform":"uppercase"}),
-        html.Div(style={**CARD,"marginBottom":"16px","padding":"12px 16px"}, children=[
-            stat_row("분양가상한제",
-                     cap_status,
-                     C["danger"] if cap_status == "지정" else C["ok"]),
         ]),
 
         # 인허가

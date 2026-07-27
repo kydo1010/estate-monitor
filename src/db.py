@@ -109,20 +109,6 @@ class BuildingPermit(Base):
     )
 
 
-class PriceCapZone(Base):
-    """분양가상한제 지정/해제 이력"""
-
-    __tablename__ = "price_cap_zones"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    district = Column(String(20), nullable=False, index=True)
-    dong = Column(String(30))
-    designated_date = Column(Date)                                # 지정일
-    released_date = Column(Date, nullable=True)                   # 해제일 (진행중이면 NULL)
-    status = Column(String(10), nullable=False, default="지정")   # 지정 / 해제
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
 # ---------------------------------------------------------------------------
 # 초기화 / 세션 헬퍼
 # ---------------------------------------------------------------------------

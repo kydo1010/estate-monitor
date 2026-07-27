@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/python.exe -c ' *)",
+      "Bash(./venv/Scripts/python.exe -c \"import sys; [print\\(l\\) for l in sys.stdin.buffer.read\\(\\).decode\\('utf-8', errors='replace'\\).splitlines\\(\\)]\")",
+      "Bash(PYTHONIOENCODING=utf-8 ./venv/Scripts/python.exe -m src.collectors.molit_officetel --months 202606)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(timeout 15 ./venv/Scripts/python.exe main.py)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 20 ./venv/Scripts/python.exe main.py)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 timeout 40 ./venv/Scripts/python.exe main.py)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 timeout 90 ./venv/Scripts/python.exe main.py)",
+      "Bash(./venv/Scripts/python.exe -m py_compile src/db.py dashboards/app.py src/collectors/seed_dummy_data.py)"
+    ]
+  }
+}

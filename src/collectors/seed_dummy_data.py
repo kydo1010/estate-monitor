@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 from src.config import BUSAN_DISTRICT_CODES
 from src.db import (
-    Base, Trade, UnsoldHousing, BuildingPermit, PriceCapZone,
+    Base, Trade, UnsoldHousing, BuildingPermit,
     engine, get_session, init_db,
 )
 
@@ -88,21 +88,6 @@ def seed_building_permits(session, n_per_district: int = 3) -> None:
             ))
 
 
-def seed_price_cap_zones(session) -> None:
-    designated = random.sample(list(BUSAN_DISTRICT_CODES.values()), 4)
-    today = date.today()
-    for district in designated:
-        d_date = today - timedelta(days=random.randint(30, 500))
-        released = random.random() < 0.3
-        session.add(PriceCapZone(
-            district=district,
-            dong=f"{district}동",
-            designated_date=d_date,
-            released_date=today - timedelta(days=random.randint(1, 30)) if released else None,
-            status="해제" if released else "지정",
-        ))
-
-
 def run() -> None:
     init_db()
     clear_all_tables()
@@ -111,13 +96,11 @@ def run() -> None:
         seed_trades(session)
         seed_unsold_housing(session)
         seed_building_permits(session)
-        seed_price_cap_zones(session)
         session.commit()
     print("더미 데이터 삽입 완료 (부산 기준):")
     print(f"  trades:           {n * 30}건")
     print(f"  unsold_housing:   {n}건")
     print(f"  building_permits: {n * 3}건")
-    print(f"  price_cap_zones:  4개구")
 
 
 if __name__ == "__main__":
