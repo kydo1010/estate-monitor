@@ -192,8 +192,10 @@ def build_map_figure(unsold_df, price_df):
         fitbounds="locations",
         visible=False,
     )
+    # 지도용 PT — margin을 0으로 덮어씀 (PT에 margin이 이미 있어서 별도 처리)
+    map_layout = {k: v for k, v in PT.items() if k != "margin"}
     fig.update_layout(
-        **PT,
+        **map_layout,
         height=580,
         margin=dict(l=0, r=0, t=0, b=0),
         geo=dict(bgcolor=C["bg"]),
