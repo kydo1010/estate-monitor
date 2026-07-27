@@ -1,6 +1,7 @@
 """
 src/collectors/building_permit.py
 국토교통부 건축HUB 주택인허가 기본개요 수집기
+(sigunguCd + bjdongCd 동 단위 순회 — 부산 205개 동)
 
 실행:
     python -m src.collectors.building_permit
@@ -9,27 +10,30 @@ src/collectors/building_permit.py
 
 import argparse
 import logging
+import time
 import xml.etree.ElementTree as ET
 from datetime import date
 
 import requests
 
-from src.config import BUILDING_PERMIT_API_KEY, BUSAN_DISTRICT_CODES
+from src.config import BUILDING_PERMIT_API_KEY, BUSAN_DISTRICT_CODES, BUSAN_DONG_CODES
 from src.db import BuildingPermit, get_session, init_db
 
 log = logging.getLogger(__name__)
 
-ENDPOINT = "https://apis.data.go.kr/1613000/HsPmsHubService/getHpBasisOulnInfo"
+ENDPOINT      = "https://apis.data.go.kr/1613000/HsPmsHubService/getHpBasisOulnInfo"
+REQUEST_DELAY = 0.3   # 동별 호출 간격
 
 
-def fetch(sigungu_cd: str, page: int = 1, num: int = 100) -> list[dict]:
+def fetch(sigungu_cd: str, bjdong_cd: str) -> list[dict]:
     params = {
         "serviceKey": BUILDING_PERMIT_API_KEY,
         "sigunguCd":  sigungu_cd,
-        "pageNo":     page,
-        "numOfRows":  num,
+        "bjdongCd":   bjdong_cd,
+        "numOfRows":  100,
+        "pageNo":     1,
     }
-    resp = requests.get(ENDPOINT, params=params, timeout=15)
+    resp = requests.get(ENDPOINT, params=params, timeout=30)
     resp.raise_for_status()
 
     root  = ET.fromstring(resp.text)
@@ -41,7 +45,6 @@ def fetch(sigungu_cd: str, page: int = 1, num: int = 100) -> list[dict]:
 
     records = []
     for el in items:
-        # apprvDay: 인허가일 (YYYYMMDD)
         approv_day = t(el, "apprvDay")
         try:
             permit_date = date(
@@ -59,13 +62,11 @@ def fetch(sigungu_cd: str, page: int = 1, num: int = 100) -> list[dict]:
             tot_hhld = None
 
         records.append({
-            "sigungu_cd":       t(el, "sigunguCd"),
-            "bld_nm":           t(el, "bldNm"),
-            "plat_plc":         t(el, "platPlc"),
-            "tot_hhld_cnt":     tot_hhld,
-            "permit_date":      permit_date,
-            "stcns_day":        t(el, "stcnsDay"),   # 착공일
-            "use_inspt_day":    t(el, "useInsptDay"), # 사용검사일
+            "bld_nm":      t(el, "bldNm"),
+            "plat_plc":    t(el, "platPlc"),
+            "tot_hhld":    tot_hhld,
+            "permit_date": permit_date,
+            "stcns_day":   t(el, "stcnsDay"),
         })
     return records
 
@@ -78,16 +79,16 @@ def save(session, records: list[dict], district: str) -> int:
         exists = session.query(BuildingPermit).filter_by(
             district=district,
             permit_date=r["permit_date"],
-            household_count=r["tot_hhld_cnt"],
+            household_count=r["tot_hhld"],
             contractor=r["bld_nm"],
         ).first()
         if not exists:
             session.add(BuildingPermit(
                 district=district,
                 permit_date=r["permit_date"],
-                household_count=r["tot_hhld_cnt"],
-                developer=r["plat_plc"],   # 주소를 시행사 컬럼에 임시 저장
-                contractor=r["bld_nm"],    # 건물명
+                household_count=r["tot_hhld"],
+                developer=r["plat_plc"],
+                contractor=r["bld_nm"],
             ))
             saved += 1
     return saved
@@ -98,20 +99,25 @@ def run(sigungu_cds: list[str] | None = None) -> None:
     targets = sigungu_cds or list(BUSAN_DISTRICT_CODES.keys())
     total_saved = 0
 
-    for cd in targets:
-        district = BUSAN_DISTRICT_CODES.get(cd, cd)
-        try:
-            records = fetch(cd)
-            if records:
-                with get_session() as session:
-                    saved = save(session, records, district)
-                    session.commit()
-                total_saved += saved
-                log.info(f"{district}: {saved}건 저장 (수신 {len(records)}건)")
-            else:
-                log.info(f"{district}: 데이터 없음")
-        except Exception as e:
-            log.error(f"{district} 수집 실패: {e}")
+    for sgg_cd in targets:
+        district   = BUSAN_DISTRICT_CODES.get(sgg_cd, sgg_cd)
+        dong_codes = BUSAN_DONG_CODES.get(sgg_cd, {})
+        gu_saved   = 0
+
+        for bjdong_cd, dong_nm in dong_codes.items():
+            try:
+                records = fetch(sgg_cd, bjdong_cd)
+                if records:
+                    with get_session() as session:
+                        saved = save(session, records, district)
+                        session.commit()
+                    gu_saved   += saved
+                    total_saved += saved
+            except Exception as e:
+                log.warning(f"{district} {dong_nm} 실패: {e}")
+            time.sleep(REQUEST_DELAY)
+
+        log.info(f"{district}: {gu_saved}건 저장 ({len(dong_codes)}개 동 순회)")
 
     log.info(f"인허가 수집 완료 — 총 {total_saved}건 저장")
 

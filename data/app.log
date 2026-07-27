@@ -107,3 +107,80 @@
 2026-07-27 16:41:49 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:8050
 2026-07-27 16:41:49 [INFO] [33mPress CTRL+C to quit[0m
+2026-07-27 16:57:47 [INFO] ============================================================
+2026-07-27 16:57:47 [INFO] 부산 분양·거래시장 통합 모니터
+2026-07-27 16:57:47 [INFO] 시작: 2026-07-27 16:57:47
+2026-07-27 16:57:47 [INFO] ============================================================
+2026-07-27 16:57:47 [INFO] DB 초기화 완료
+2026-07-27 16:57:47 [INFO] 스케줄러 백그라운드 실행 중 (매주 월요일 07:00 갱신)
+2026-07-27 16:57:47 [INFO] 스케줄러 시작 — 매주 월요일 오전 07:00 갱신
+2026-07-27 16:57:47 [INFO] 다음 갱신 예정: 2026-08-03 07:00:00
+2026-07-28 08:35:23 [INFO] ============================================================
+2026-07-28 08:35:23 [INFO] 부산 분양·거래시장 통합 모니터
+2026-07-28 08:35:23 [INFO] 시작: 2026-07-28 08:35:23
+2026-07-28 08:35:23 [INFO] ============================================================
+2026-07-28 08:35:23 [INFO] DB 초기화 완료
+2026-07-28 08:35:23 [INFO] 스케줄러 백그라운드 실행 중 (매주 월요일 07:00 갱신)
+2026-07-28 08:35:23 [INFO] 스케줄러 시작 — 매주 월요일 오전 07:00 갱신
+2026-07-28 08:35:23 [INFO] 다음 갱신 예정: 2026-08-03 07:00:00
+2026-07-28 08:35:28 [INFO] 대시보드 시작: http://127.0.0.1:8050
+2026-07-28 08:35:28 [INFO] Dash is running on http://127.0.0.1:8050/
+
+2026-07-28 08:35:35 [INFO] ============================================================
+2026-07-28 08:35:35 [INFO] 부산 분양·거래시장 통합 모니터
+2026-07-28 08:35:35 [INFO] 시작: 2026-07-28 08:35:35
+2026-07-28 08:35:35 [INFO] ============================================================
+2026-07-28 08:35:35 [INFO] DB 초기화 완료
+2026-07-28 08:35:35 [INFO] 스케줄러 백그라운드 실행 중 (매주 월요일 07:00 갱신)
+2026-07-28 08:35:35 [INFO] 스케줄러 시작 — 매주 월요일 오전 07:00 갱신
+2026-07-28 08:35:35 [INFO] 다음 갱신 예정: 2026-08-03 07:00:00
+2026-07-28 08:35:38 [INFO] 대시보드 시작: http://127.0.0.1:8050
+2026-07-28 08:35:38 [INFO] Dash is running on http://127.0.0.1:8050/
+
+2026-07-28 08:36:39 [INFO] ============================================================
+2026-07-28 08:36:39 [INFO] 부산 분양·거래시장 통합 모니터
+2026-07-28 08:36:39 [INFO] 시작: 2026-07-28 08:36:39
+2026-07-28 08:36:39 [INFO] ============================================================
+2026-07-28 08:36:39 [INFO] DB 초기화 완료
+2026-07-28 08:36:39 [INFO] 스케줄러 백그라운드 실행 중 (매주 월요일 07:00 갱신)
+2026-07-28 08:36:39 [INFO] 스케줄러 시작 — 매주 월요일 오전 07:00 갱신
+2026-07-28 08:36:39 [INFO] 다음 갱신 예정: 2026-08-03 07:00:00
+2026-07-28 08:36:46 [INFO] 대시보드 시작: http://127.0.0.1:8050
+2026-07-28 08:36:46 [INFO] Dash is running on http://127.0.0.1:8050/
+
+2026-07-28 08:36:46 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:8050
+2026-07-28 08:36:46 [INFO] [33mPress CTRL+C to quit[0m
+2026-07-28 08:37:07 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:07] "GET / HTTP/1.1" 200 -
+2026-07-28 08:37:08 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:08] "GET /_dash-layout HTTP/1.1" 200 -
+2026-07-28 08:37:08 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:08] "GET /_dash-dependencies HTTP/1.1" 200 -
+2026-07-28 08:37:08 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:08] "POST /_dash-update-component?endId=zKK28CMBR4gMlZafr7O5ezI1~aea9da2808619667e6d3bcf261249bfa6af42798fddf6a76761a2f744fa40167 HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET / HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-component-suites/dash/deps/react@18.v4_4_1m1785119918.3.1.min.js HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-component-suites/dash/deps/react-dom@18.v4_4_1m1785119918.3.1.min.js HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-component-suites/dash/deps/prop-types@15.v4_4_1m1785119918.8.1.min.js HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-component-suites/dash/dash-renderer/build/dash_renderer.v4_4_1m1785119917.min.js HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-layout HTTP/1.1" 200 -
+2026-07-28 08:37:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:15] "GET /_dash-dependencies HTTP/1.1" 200 -
+2026-07-28 08:37:16 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:16] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:37:16 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:16] "GET /_favicon.ico?v=4.4.1 HTTP/1.1" 200 -
+2026-07-28 08:37:27 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:27] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:37:27 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:27] "[36mGET /_dash-component-suites/dash/dcc/async-graph.js HTTP/1.1[0m" 304 -
+2026-07-28 08:37:27 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:27] "[36mGET /_dash-component-suites/plotly/package_data/plotly.min.js HTTP/1.1[0m" 304 -
+2026-07-28 08:37:32 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:32] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:37:37 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:37] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:37:37 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:37] "[36mGET /_dash-component-suites/dash/dash_table/async-highlight.js HTTP/1.1[0m" 304 -
+2026-07-28 08:37:37 [INFO] 127.0.0.1 - - [28/Jul/2026 08:37:37] "[36mGET /_dash-component-suites/dash/dash_table/async-table.js HTTP/1.1[0m" 304 -
+2026-07-28 08:38:02 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:02] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:38:04 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:04] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:38:05 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:05] "POST /_dash-update-component?endId=gnfRQiYCQCd65JUyOnkfGDY2~eb87e197a44762da7aeb83ee24e99514f3197c34fd275a8ad0b50b688f792ca6 HTTP/1.1" 200 -
+2026-07-28 08:38:09 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:09] "GET / HTTP/1.1" 200 -
+2026-07-28 08:38:09 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:09] "GET /_dash-layout HTTP/1.1" 200 -
+2026-07-28 08:38:09 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:09] "GET /_dash-dependencies HTTP/1.1" 200 -
+2026-07-28 08:38:09 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:09] "GET /_favicon.ico?v=4.4.1 HTTP/1.1" 200 -
+2026-07-28 08:38:09 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:09] "POST /_dash-update-component?endId=lmDh0eC4g2mBvYqZrvbZwlYH~bc1da23855d02e6038cae684a74380f9b2a915d5700040fa044bccd38cf50726 HTTP/1.1" 200 -
+2026-07-28 08:38:13 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:13] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 200 -
+2026-07-28 08:38:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:15] "GET /_dash-component-suites/dash/dcc/dash_core_components.js.map HTTP/1.1" 200 -
+2026-07-28 08:38:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:15] "GET /_dash-component-suites/dash/dcc/dash_core_components-shared.js.map HTTP/1.1" 200 -
+2026-07-28 08:38:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:15] "GET /_dash-component-suites/dash/html/dash_html_components.min.js.map HTTP/1.1" 200 -
+2026-07-28 08:38:15 [INFO] 127.0.0.1 - - [28/Jul/2026 08:38:15] "GET /_dash-component-suites/dash/dash_table/bundle.js.map HTTP/1.1" 200 -

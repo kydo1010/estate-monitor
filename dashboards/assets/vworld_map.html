@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>부산 분양·거래시장 지도</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    #map { width: 100%; height: 100%; }
+
+    /* 범례 */
+    #legend {
+      position: absolute;
+      bottom: 24px;
+      left: 12px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid #dde3ed;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
+      font-size: 12px;
+      color: #333;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    #legend h4 { font-size: 11px; color: #666; margin-bottom: 6px; letter-spacing: 0.05em; }
+    .legend-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+    .legend-color { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+
+    /* 로딩 */
+    #loading {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: 'Malgun Gothic', sans-serif;
+      font-size: 14px; color: #666;
+      z-index: 2000;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">지도 로딩 중...</div>
+  <div id="map"></div>
+
+  <div id="legend">
+    <h4>미분양 현황</h4>
+    <div class="legend-item"><div class="legend-color" style="background:#1a6b3c"></div> 미분양 없음</div>
+    <div class="legend-item"><div class="legend-color" style="background:#4caf82"></div> 50세대 미만</div>
+    <div class="legend-item"><div class="legend-color" style="background:#f5c842"></div> 50~150세대</div>
+    <div class="legend-item"><div class="legend-color" style="background:#e8845a"></div> 150~300세대</div>
+    <div class="legend-item"><div class="legend-color" style="background:#e05c5c"></div> 300세대 이상</div>
+  </div>
+
+  <!-- V-World 2D 지도 API -->
+  <script src="https://map.vworld.kr/js/vworldMapInit.js.do?version=2.0&apiKey=__VWORLD_API_KEY__&domain=http://127.0.0.1"></script>
+
+  <script>
+    // 부산 16개 구·군 미분양 데이터 (Dash에서 postMessage로 주입)
+    var unsoldData = {};
+
+    // 구·군별 색상 계산
+    function getColor(unsoldCount) {
+      if (!unsoldCount || unsoldCount === 0) return '#1a6b3c';
+      if (unsoldCount < 50)  return '#4caf82';
+      if (unsoldCount < 150) return '#f5c842';
+      if (unsoldCount < 300) return '#e8845a';
+      return '#e05c5c';
+    }
+
+    // 지도 초기화
+    var map;
+    var layerList = [];
+
+    function initMap() {
+      map = new vw.ol3.Map({
+        mapId: 'map',
+        initX: 129.0756,   // 부산 중심 경도
+        initY: 35.1796,    // 부산 중심 위도
+        initZoom: 11,
+        basemapType: vw.ol3.BasemapType.GRAPHIC,
+      });
+
+      document.getElementById('loading').style.display = 'none';
+      loadBusanGeoJSON();
+    }
+
+    // 부산 GeoJSON 로드 (vuski 공개 데이터)
+    function loadBusanGeoJSON() {
+      fetch('https://raw.githubusercontent.com/vuski/admdongkor/master/ver20230701/HangJeongDong_ver20230701.geojson')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          buildGuLayer(data);
+        })
+        .catch(function(e) {
+          console.error('GeoJSON 로드 실패:', e);
+        });
+    }
+
+    // 구·군 레이어 생성
+    function buildGuLayer(data) {
+      // sido=26(부산) 동 단위 → 구 단위로 병합은 클라이언트에서 어려우므로
+      // 구별 대표 좌표에 마커 + WFS 폴리곤 방식 사용
+      var busanFeatures = data.features.filter(function(f) {
+        return f.properties.sido === '26';
+      });
+
+      // 구별 집계
+      var guMap = {};
+      busanFeatures.forEach(function(f) {
+        var sgg  = f.properties.sgg;
+        var name = f.properties.sggnm;
+        if (!guMap[sgg]) guMap[sgg] = { name: name, features: [] };
+        guMap[sgg].features.push(f);
+      });
+
+      // OpenLayers GeoJSON 레이어로 추가
+      var ol = vw.ol3;
+
+      Object.keys(guMap).forEach(function(sgg) {
+        var gu      = guMap[sgg];
+        var guName  = gu.name;
+        var unsold  = unsoldData[guName] || 0;
+        var color   = getColor(unsold);
+
+        // 각 동 폴리곤을 레이어로 추가
+        gu.features.forEach(function(f) {
+          var vectorSource = new ol4.source.Vector({
+            features: (new ol4.format.GeoJSON()).readFeatures(f, {
+              featureProjection: 'EPSG:3857',
+              dataProjection:    'EPSG:4326',
+            })
+          });
+
+          var vectorLayer = new ol4.layer.Vector({
+            source: vectorSource,
+            style: new ol4.style.Style({
+              fill:   new ol4.style.Fill({ color: color + 'bb' }),
+              stroke: new ol4.style.Stroke({ color: '#ffffff', width: 1.5 }),
+            }),
+          });
+
+          vectorLayer.guName  = guName;
+          vectorLayer.unsold  = unsold;
+          vectorLayer.sgg     = sgg;
+          map.map.addLayer(vectorLayer);
+          layerList.push(vectorLayer);
+        });
+      });
+
+      // 클릭 이벤트
+      map.map.on('click', function(evt) {
+        var hit = false;
+        map.map.forEachFeatureAtPixel(evt.pixel, function(feature, layer) {
+          if (!hit && layer && layer.guName) {
+            hit = true;
+            onGuClick(layer.guName);
+          }
+        });
+      });
+
+      // 구명 레이블
+      addGuLabels(guMap);
+    }
+
+    // 구명 레이블 추가
+    function addGuLabels(guMap) {
+      var ol4 = window.ol || {};
+      Object.keys(guMap).forEach(function(sgg) {
+        var gu     = guMap[sgg];
+        var coords = getCentroid(gu.features);
+        if (!coords) return;
+
+        var marker = new vw.ol3.Marker({
+          x: coords[0], y: coords[1],
+          epsg: 'EPSG:4326',
+          label: gu.name,
+          labelStyle: {
+            font: 'bold 12px Malgun Gothic',
+            fill: new ol.style.Fill({ color: '#1a2234' }),
+          },
+        });
+        map.addMarker(marker);
+      });
+    }
+
+    // 폴리곤 무게중심 계산
+    function getCentroid(features) {
+      var sumX = 0, sumY = 0, cnt = 0;
+      features.forEach(function(f) {
+        var coords = f.geometry.coordinates;
+        if (f.geometry.type === 'Polygon') {
+          coords[0].forEach(function(c) { sumX += c[0]; sumY += c[1]; cnt++; });
+        } else if (f.geometry.type === 'MultiPolygon') {
+          coords.forEach(function(poly) {
+            poly[0].forEach(function(c) { sumX += c[0]; sumY += c[1]; cnt++; });
+          });
+        }
+      });
+      return cnt ? [sumX / cnt, sumY / cnt] : null;
+    }
+
+    // 구·군 클릭 → Dash에 메시지 전달
+    function onGuClick(guName) {
+      window.parent.postMessage({ type: 'gu_click', name: guName }, '*');
+    }
+
+    // Dash에서 미분양 데이터 수신
+    window.addEventListener('message', function(evt) {
+      if (evt.data && evt.data.type === 'unsold_data') {
+        unsoldData = evt.data.data;
+        refreshColors();
+      }
+    });
+
+    // 색상 갱신
+    function refreshColors() {
+      layerList.forEach(function(layer) {
+        var unsold = unsoldData[layer.guName] || 0;
+        var color  = getColor(unsold);
+        layer.setStyle(new ol4.style.Style({
+          fill:   new ol4.style.Fill({ color: color + 'bb' }),
+          stroke: new ol4.style.Stroke({ color: '#ffffff', width: 1.5 }),
+        }));
+      });
+    }
+
+    // V-World 초기화 콜백
+    window.onload = function() {
+      if (typeof vw !== 'undefined') {
+        initMap();
+      } else {
+        document.getElementById('loading').textContent = 'V-World API 로드 실패 — API 키 및 도메인을 확인하세요.';
+      }
+    };
+  </script>
+</body>
+</html>
