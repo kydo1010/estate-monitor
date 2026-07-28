@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -37,6 +37,23 @@
       z-index: 2000;
     }
   </style>
+
+  <!-- 1. jQuery -->
+  <script src="https://map.vworld.kr/jquery/ol3/jquery-1.11.3.min.js"></script>
+  <script src="https://map.vworld.kr/jquery/ol3/jquery-ui.min.js"></script>
+
+  <!-- 2. Apps Script: vw 객체 정의 (document.write 제거됨) -->
+  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec?type=js"></script>
+
+  <!-- 3. OpenLayers — Apps Script 경유 (중복 방지) -->
+  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec?type=ol"></script>
+
+  <!-- 4. 나머지 -->
+  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.raphael.js"></script>
+  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.raphael.max.js"></script>
+  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.bar.max.js"></script>
+  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.pie.max.js"></script>
+  <script src="https://map.vworld.kr/js/vw.ol3.2DMapClassInit_v30.min.js"></script>
 </head>
 <body>
   <div id="loading">지도 로딩 중...</div>
@@ -50,9 +67,6 @@
     <div class="legend-item"><div class="legend-color" style="background:#e8845a"></div> 150~300세대</div>
     <div class="legend-item"><div class="legend-color" style="background:#e05c5c"></div> 300세대 이상</div>
   </div>
-
-  <!-- V-World 2D 지도 API -->
-  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec"></script>
 
   <script>
     // 부산 16개 구·군 미분양 데이터 (Dash에서 postMessage로 주입)
@@ -84,7 +98,7 @@
       loadBusanGeoJSON();
     }
 
-    // 부산 GeoJSON 로드 (vuski 공개 데이터)
+    // 부산 GeoJSON 로드 — Apps Script WFS 프록시 경유
     function loadBusanGeoJSON() {
       fetch('https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec')
         .then(function(r) { return r.json(); })
@@ -93,13 +107,13 @@
         })
         .catch(function(e) {
           console.error('GeoJSON 로드 실패:', e);
+          document.getElementById('loading').textContent = 'GeoJSON 로드 실패: ' + e.message;
+          document.getElementById('loading').style.display = 'block';
         });
     }
 
     // 구·군 레이어 생성
     function buildGuLayer(data) {
-      // sido=26(부산) 동 단위 → 구 단위로 병합은 클라이언트에서 어려우므로
-      // 구별 대표 좌표에 마커 + WFS 폴리곤 방식 사용
       var busanFeatures = data.features.filter(function(f) {
         return f.properties.sido === '26';
       });
@@ -113,16 +127,12 @@
         guMap[sgg].features.push(f);
       });
 
-      // OpenLayers GeoJSON 레이어로 추가
-      var ol = vw.ol3;
-
       Object.keys(guMap).forEach(function(sgg) {
         var gu      = guMap[sgg];
         var guName  = gu.name;
         var unsold  = unsoldData[guName] || 0;
         var color   = getColor(unsold);
 
-        // 각 동 폴리곤을 레이어로 추가
         gu.features.forEach(function(f) {
           var vectorSource = new ol4.source.Vector({
             features: (new ol4.format.GeoJSON()).readFeatures(f, {
@@ -139,9 +149,9 @@
             }),
           });
 
-          vectorLayer.guName  = guName;
-          vectorLayer.unsold  = unsold;
-          vectorLayer.sgg     = sgg;
+          vectorLayer.guName = guName;
+          vectorLayer.unsold = unsold;
+          vectorLayer.sgg    = sgg;
           map.map.addLayer(vectorLayer);
           layerList.push(vectorLayer);
         });
@@ -158,13 +168,11 @@
         });
       });
 
-      // 구명 레이블
       addGuLabels(guMap);
     }
 
     // 구명 레이블 추가
     function addGuLabels(guMap) {
-      var ol4 = window.ol || {};
       Object.keys(guMap).forEach(function(sgg) {
         var gu     = guMap[sgg];
         var coords = getCentroid(gu.features);

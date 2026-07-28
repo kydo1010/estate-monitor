@@ -1,0 +1,7 @@
+.Select-value-label {
+    color: #000000 !important;
+}
+
+.Select--single > .Select-control .Select-value {
+    color: #000000 !important;
+}
