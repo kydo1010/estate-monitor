@@ -52,7 +52,7 @@
   </div>
 
   <!-- V-World 2D 지도 API -->
-  <script src="https://map.vworld.kr/js/vworldMapInit.js.do?version=2.0&apiKey=__VWORLD_API_KEY__&domain=http://127.0.0.1"></script>
+  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec"></script>
 
   <script>
     // 부산 16개 구·군 미분양 데이터 (Dash에서 postMessage로 주입)
@@ -86,7 +86,7 @@
 
     // 부산 GeoJSON 로드 (vuski 공개 데이터)
     function loadBusanGeoJSON() {
-      fetch('https://raw.githubusercontent.com/vuski/admdongkor/master/ver20230701/HangJeongDong_ver20230701.geojson')
+      fetch('https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec')
         .then(function(r) { return r.json(); })
         .then(function(data) {
           buildGuLayer(data);

@@ -20,6 +20,38 @@ dashboards/app.py
   테마가 즉시 원래대로 되돌아갔음(짝수 번째 클릭마다 고정되는 것처럼 보임).
   → theme-toggle-btn을 app.layout 최상위에 고정 배치해 다시는 재마운트되지 않도록 하고,
     라벨/스타일만 별도 콜백(sync_toggle_button)이 theme-store를 보고 갱신하도록 분리.
+    (참고: 이후 요청으로 버튼을 헤더 인라인 배치로 되돌리면서 sync_toggle_button은
+    제거됨 — 아래 항목 참고.)
+- 헤더 인라인 배치로 되돌린 뒤 페이지가 흰 화면만 뜨던 버그 수정.
+  theme-toggle-btn을 다시 build_shell() 안(헤더의 "갱신: 날짜" 옆)으로 옮기면서,
+  sync_toggle_button 콜백(Output: theme-toggle-btn.children/style, Input: theme-store)은
+  지우지 않고 그대로 남겨뒀음. 그 결과 theme-toggle-btn이라는 같은 id를 놓고 두 콜백이
+  동시에 소유권을 다투게 됨 — 하나는 page-content.children을 통해 그 버튼을 "포함하는"
+  서브트리 전체를 새로 만들고(render_shell), 다른 하나는 그 버튼의 개별 prop을 직접
+  갱신(sync_toggle_button)하려 함. 페이지 최초 로드 시 둘 다 theme-store.data를 Input으로
+  가지므로 동시에 발동하는데, 이 시점에는 theme-toggle-btn이 아직 어디에도 렌더링되지
+  않은 상태라 sync_toggle_button이 대상 DOM 노드를 찾지 못해 dash-renderer가 처리하지
+  못하고 클라이언트에서 렌더링이 통째로 죽어버림 → 흰 화면.
+  → sync_toggle_button 콜백을 완전히 제거. build_shell()이 버튼을 (재)생성할 때마다
+    get_toggle_button_label()/get_toggle_button_style()로 이미 테마에 맞는 라벨·색을
+    직접 채워 넣으므로 별도 콜백 없이도 항상 최신 상태이며, id 소유권 충돌도 사라짐.
+    (참고: 이후 요청으로 theme-toggle-btn을 다시 build_shell() 안(헤더 인라인)으로
+    옮기게 됨 — 아래 두 항목 참고.)
+- (재발) build_shell()이 theme-store 변경마다 버�른을 n_clicks=0으로 재생성해
+  두 번째 클릭부터 테마가 고정되는 버그가 다시 발생.
+  이를 theme-click-store(dcc.Store)로 클릭 횟수를 별도 집계해 우회하려 시도했으나,
+  집계 콜백(record_click)의 Input이 여전히 theme-toggle-btn.n_clicks였기 때문에
+  n_clicks가 리셋될 때도 "클릭"으로 오인되어 카운터가 함께 튀는 것은 그대로였음.
+  결과적으로 클릭 1번 = toggle_theme 2번 연달아 발동 = 테마가 원래대로 즉시 복귀
+  (겉보기엔 "버튼이 아예 안 먹는다"로 증상만 바뀌었을 뿐 근본 원인은 그대로였음).
+  → theme-click-store/record_click 제거.
+- theme-toggle-btn을 app.layout 최상위에 position: fixed로 다시 고정 배치해
+  build_shell()이 이 버튼을 절대 만들지 않도록 함(재생성 자체가 없으니 n_clicks도
+  리셋될 일이 없음). toggle_theme는 다시 Input: theme-toggle-btn.n_clicks로 직접
+  반응. 라벨/스타일은 update_toggle_button_display 콜백 하나가 Input: theme-store.data
+  를 보고 theme-toggle-btn.children/style만 갱신 — page-content 안쪽에는 이 id를 가진
+  다른 엘리먼트가 전혀 없으므로(= build_shell이 만들지 않으므로) 예전처럼 두 콜백이
+  같은 id를 놓고 충돌해 흰 화면이 뜨는 문제도 재발하지 않음.
 """
 
 import json
@@ -122,7 +154,7 @@ def get_table_style(colors: dict) -> dict:
             "color": colors["text"],
             "border": f"1px solid {colors['border']}",
             "padding": "10px 14px",
-            "fontSize": "26px",
+            "fontSize": "18px",
             "fontFamily": "Malgun Gothic, Apple SD Gothic Neo, sans-serif",
         },
         "style_header": {
@@ -130,7 +162,7 @@ def get_table_style(colors: dict) -> dict:
             "color": colors["muted"],
             "fontWeight": "600",
             "border": f"1px solid {colors['border']}",
-            "fontSize": "24px",
+            "fontSize": "17px",
             "letterSpacing": "0.05em",
         },
         "style_data_conditional": [
@@ -141,12 +173,12 @@ def get_table_style(colors: dict) -> dict:
 
 def kpi(colors, label, value, color=None, sub=None):
     return html.Div(style=get_kpi_card_style(colors), children=[
-        html.P(label, style={"color": colors["muted"], "fontSize": "22px",
+        html.P(label, style={"color": colors["muted"], "fontSize": "15px",
                               "letterSpacing": "0.1em", "margin": "0 0 8px",
                               "textTransform": "uppercase"}),
-        html.P(str(value), style={"color": color or colors["text"], "fontSize": "34px",
+        html.P(str(value), style={"color": color or colors["text"], "fontSize": "24px",
                                    "fontWeight": "700", "margin": "0", "lineHeight": "1"}),
-        html.P(sub or "", style={"color": colors["muted"], "fontSize": "22px", "margin": "6px 0 0"}),
+        html.P(sub or "", style={"color": colors["muted"], "fontSize": "15px", "margin": "6px 0 0"}),
     ])
 
 # ---------------------------------------------------------------------------
@@ -219,7 +251,7 @@ def build_tab_map(colors):
                         "alignItems":"start"}, children=[
             html.Div(style=CARD, children=[
                 html.P("구·군을 클릭하면 상세 정보를 확인할 수 있습니다.",
-                       style={"color":colors["muted"],"fontSize":"24px","margin":"0 0 10px"}),
+                       style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 10px"}),
                 html.Iframe(
                     id="vworld-iframe",
                     srcDoc=html_content,
@@ -228,7 +260,7 @@ def build_tab_map(colors):
             ]),
             html.Div(id="map-side-panel", style={**CARD, "minHeight":"560px"}, children=[
                 html.P("← 지도에서 구·군을 클릭하세요",
-                       style={"color":colors["muted"],"fontSize":"26px",
+                       style={"color":colors["muted"],"fontSize":"18px",
                               "marginTop":"60px","textAlign":"center"}),
             ]),
         ]),
@@ -260,7 +292,7 @@ def build_tab_unsold(colors, df):
         x=bar_df["미분양세대수"], y=bar_df["지역구"], orientation="h",
         marker_color=[colors["danger"] if v else colors["accent"] for v in bar_df["급증여부"]],
         text=bar_df["증감률"].apply(lambda x: f"{x:+.1f}%" if x else ""),
-        textposition="outside", textfont=dict(color=colors["text"], size=22),
+        textposition="outside", textfont=dict(color=colors["text"], size=15),
     ))
     fig.update_layout(**PT, title="구·군별 미분양 세대수  ·  빨간색 = 전월 대비 30%↑",
                       height=560, xaxis=dict(gridcolor=colors["border"]),
@@ -277,7 +309,7 @@ def build_tab_unsold(colors, df):
                             kpi(colors, "정상 지역", n_total - n_spike_local, colors["ok"])]),
         html.Div(style={**CARD,"marginBottom":"24px","borderLeft":f"3px solid {colors['danger']}"}, children=[
             html.P("⚠  영업 우선 타깃 — 시공사 교체 또는 분양 전략 변경 가능성 높음",
-                   style={"color":colors["danger"],"fontWeight":"600","margin":"0 0 16px","fontSize":"26px"}),
+                   style={"color":colors["danger"],"fontWeight":"600","margin":"0 0 16px","fontSize":"18px"}),
             dash_table.DataTable(data=spike_rows.to_dict("records"),
                 columns=[{"name":c,"id":c} for c in spike_rows.columns], **TABLE_STYLE)
             if not spike_rows.empty else html.P("현재 급증 지역 없음", style={"color":colors["muted"]}),
@@ -301,7 +333,7 @@ def build_tab_price(colors, df, tdf):
         marker=dict(color=bar_df["평균거래가"],
                     colorscale=[[0,colors["accent2"]],[1,colors["accent"]]]),
         text=bar_df["평균거래가"].apply(lambda x: f"{x:,.0f}만"),
-        textposition="outside", textfont=dict(color=colors["text"], size=20),
+        textposition="outside", textfont=dict(color=colors["text"], size=14),
     ))
     fig_bar.update_layout(**PT, title="구·군별 평균 거래가 (최근 3개월)", height=560,
                           xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
@@ -344,7 +376,7 @@ def build_tab_permit(colors, df):
             x=sm["세대수"], y=sm["지역구"], orientation="h",
             marker_color=colors["accent"],
             text=sm["세대수"].apply(lambda x: f"{x:,}세대"),
-            textposition="outside", textfont=dict(color=colors["text"], size=20),
+            textposition="outside", textfont=dict(color=colors["text"], size=14),
         ))
         fig.update_layout(**PT, title="구·군별 신규 착공·인허가 세대수", height=560,
                           xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
@@ -365,7 +397,7 @@ def build_tab_permit(colors, df):
                 orientation="v",
                 yanchor="middle", y=0.5,
                 xanchor="left", x=1.02,
-                font=dict(size=22),
+                font=dict(size=15),
                 traceorder="normal",
             ),
         )
@@ -384,7 +416,7 @@ def build_tab_permit(colors, df):
             html.Div(style={"marginTop":"16px"}, children=[dcc.Graph(figure=fig_pie)]),
             html.Div(style={**CARD,"marginTop":"24px"}, children=[
                 html.P("최근 인허가 내역 (상위 20건)",
-                       style={"color":colors["muted"],"fontSize":"24px","margin":"0 0 12px"}),
+                       style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 12px"}),
                 dash_table.DataTable(data=tdf.to_dict("records"),
                     columns=[{"name":c,"id":c} for c in tdf.columns], **TABLE_STYLE),
             ]),
@@ -397,24 +429,24 @@ def build_tab_permit(colors, df):
         # 이제 이 실시간 검색 조회 방식만으로 사용함 (배치 수집은 폐지).
         html.Div(style={**CARD,"marginTop":"24px"}, children=[
             html.P("건축HUB 주택인허가 검색",
-                   style={"color":colors["text"],"fontSize":"30px","fontWeight":"700",
+                   style={"color":colors["text"],"fontSize":"21px","fontWeight":"700",
                           "margin":"0 0 4px"}),
             html.P("구·군과 동을 선택하면 해당 지역의 주택인허가 정보를 실시간 조회합니다.",
-                   style={"color":colors["muted"],"fontSize":"24px","margin":"0 0 16px"}),
+                   style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 16px"}),
             html.Div(style={"display":"flex","gap":"12px","flexWrap":"wrap","alignItems":"center"},
                      children=[
                 dcc.Dropdown(
                     id="permit-search-gu",
                     options=[{"label": v, "value": k} for k, v in BUSAN_DISTRICT_CODES.items()],
                     placeholder="구·군 선택",
-                    style={"width":"160px","fontSize":"26px"},
+                    style={"width":"160px","fontSize":"18px"},
                     clearable=False,
                 ),
                 dcc.Dropdown(
                     id="permit-search-dong",
                     options=[],
                     placeholder="동 선택",
-                    style={"width":"180px","fontSize":"26px"},
+                    style={"width":"180px","fontSize":"18px"},
                     clearable=False,
                 ),
                 html.Button("검색", id="permit-search-btn", n_clicks=0,
@@ -424,12 +456,16 @@ def build_tab_permit(colors, df):
                         "border": "none",
                         "borderRadius": "8px",
                         "padding": "8px 20px",
-                        "fontSize": "26px",
+                        "fontSize": "18px",
                         "fontWeight": "600",
                         "cursor": "pointer",
                     }),
             ]),
-            html.Div(id="permit-search-result", style={"marginTop":"20px"}),
+            dcc.Loading(
+                id="permit-search-loading",
+                type="default",
+                children=html.Div(id="permit-search-result", style={"marginTop":"20px"}),
+            ),
         ]),
     ])
 
@@ -449,16 +485,18 @@ def build_shell(theme, active_tab):
     """
     헤더 + 서브헤더 + 탭바 + tab-content 컨테이너(초기 콘텐츠 포함)를 반환.
     이 함수는 theme-store 변경시에만 호출되어야 함 (탭 전환으로는 호출 금지).
-    theme-toggle-btn은 app.layout 최상위에 고정 배치되어 있고 여기서는
-    만들지 않는다 — 이 함수 안에서 버튼을 다시 만들면 n_clicks가 초기화되어
-    두 번째 클릭부터 테마가 고정되는 버그가 재발한다.
-    헤더 우측에는 버튼이 겹치지 않도록 여백만 남겨둔다.
+
+    theme-toggle-btn은 여기서 절대 만들지 않는다 — app.layout 최상위에 고정
+    배치되어 있고, 이 함수는 theme-store가 바뀔 때마다(render_shell을 통해)
+    반복 호출되므로 버튼을 여기서 만들면 매번 n_clicks가 리셋되어 두 번째
+    클릭부터 테마가 고정되는 버그가 재발한다. 라벨/스타일은
+    update_toggle_button_display 콜백이 별도로 갱신한다.
     """
     colors = get_colors(theme)
 
     TAB_S = {"backgroundColor":"transparent","color":colors["muted"],"border":"none",
               "borderBottom":"2px solid transparent","padding":"12px 20px",
-              "fontSize":"26px","fontWeight":"500"}
+              "fontSize":"21px","fontWeight":"500"}
     TAB_A = {**TAB_S,"color":colors["accent"],"borderBottom":f"2px solid {colors['accent']}",
               "backgroundColor":"transparent"}
 
@@ -476,14 +514,14 @@ def build_shell(theme, active_tab):
                             "justifyContent":"space-between","height":"64px",
                             "boxShadow":"0 1px 4px rgba(0,0,0,0.06)"}, children=[
                 html.Div(style={"display":"flex","alignItems":"center","gap":"12px"}, children=[
-                    html.Span("●", style={"color":colors["accent"],"fontSize":"20px"}),
+                    html.Span("●", style={"color":colors["accent"],"fontSize":"14px"}),
                     html.Span("부산 분양·거래시장 통합 모니터",
-                              style={"fontWeight":"800","fontSize":"44px",
+                              style={"fontWeight":"800","fontSize":"25px",
                                      "letterSpacing":"-0.5px","color":colors["text"]}),
                 ]),
                 html.Div(style={"display":"flex","alignItems":"center","gap":"20px"}, children=[
                     html.Span(f"갱신: {updated_at}",
-                              style={"color":colors["muted"],"fontSize":"24px"}),
+                              style={"color":colors["muted"],"fontSize":"17px"}),
                 ]),
             ]),
 
@@ -491,7 +529,7 @@ def build_shell(theme, active_tab):
             html.Div(style={"padding":"10px 32px","backgroundColor":colors["surface2"],
                             "borderBottom":f"1px solid {colors['border']}"}, children=[
                 html.P("미분양이 쌓이는 지역의 시행사를 먼저 포착해 시공사 교체·분양 전략 변경 타이밍에 선제적으로 영업합니다.",
-                       style={"color":colors["muted"],"fontSize":"24px","margin":"0"}),
+                       style={"color":colors["muted"],"fontSize":"13px","margin":"0"}),
             ]),
 
             # 탭 바
@@ -516,7 +554,7 @@ def build_shell(theme, active_tab):
             html.Div(style={"padding":"14px 32px","borderTop":f"1px solid {colors['border']}",
                             "marginTop":"24px","backgroundColor":colors["surface"]}, children=[
                 html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API",
-                       style={"color":colors["muted"],"fontSize":"22px","margin":"0"}),
+                       style={"color":colors["muted"],"fontSize":"15px","margin":"0"}),
             ]),
         ]
     )
@@ -528,7 +566,7 @@ def get_toggle_button_style(colors: dict) -> dict:
         "right": "32px",
         "zIndex": 1000,
         "color": colors["text"],
-        "fontSize": "24px",
+        "fontSize": "17px",
         "fontWeight": "600",
         "backgroundColor": colors["surface2"],
         "border": f"1px solid {colors['border']}",
@@ -552,9 +590,9 @@ app.layout = html.Div([
     dcc.Store(id="theme-store", data=DEFAULT_THEME),
     dcc.Store(id="active-tab-store", data="tab-map"),
     # theme-toggle-btn: page-content 바깥, app.layout 최상위에 고정 배치.
-    # page-content(및 그 하위 셸)가 다시 그려져도 이 버튼은 절대 재마운트되지
-    # 않으므로 n_clicks가 리셋되지 않는다. 라벨·스타일은 sync_toggle_button
-    # 콜백이 theme-store를 보고 별도로 갱신한다.
+    # build_shell()은 이 id를 가진 엘리먼트를 절대 만들지 않으므로, page-content가
+    # 다시 그려져도 이 버튼은 재마운트되지 않아 n_clicks가 리셋되지 않는다.
+    # 라벨·스타일은 update_toggle_button_display 콜백이 theme-store를 보고 갱신한다.
     html.Button(
         get_toggle_button_label(DEFAULT_THEME),
         id="theme-toggle-btn",
@@ -584,9 +622,9 @@ def toggle_theme(n_clicks, current_theme):
     Output("theme-toggle-btn", "style"),
     Input("theme-store", "data"),
 )
-def sync_toggle_button(theme):
-    # 버튼의 라벨·색상만 갱신한다. 버튼 자체(및 n_clicks)는 절대 건드리지
-    # 않으므로 toggle_theme 콜백이 의도치 않게 재발동되지 않는다.
+def update_toggle_button_display(theme):
+    # 버튼의 라벨·색상만 갱신한다. build_shell()이 이 id를 가진 엘리먼트를
+    # 절대 만들지 않으므로 다른 콜백과 소유권이 겹치지 않는다.
     colors = get_colors(theme)
     return get_toggle_button_label(theme), get_toggle_button_style(colors)
 
@@ -639,7 +677,7 @@ def map_side_panel(gu_name, theme):
 
     if not gu_name:
         return html.P("← 지도에서 구·군을 클릭하세요",
-                      style={"color":colors["muted"],"fontSize":"26px",
+                      style={"color":colors["muted"],"fontSize":"18px",
                              "marginTop":"60px","textAlign":"center"})
 
     u_row   = unsold_df[unsold_df["지역구"] == gu_name]
@@ -658,24 +696,24 @@ def map_side_panel(gu_name, theme):
             style={"display":"flex","justifyContent":"space-between",
                    "padding":"8px 0","borderBottom":f"1px solid {colors['border']}"},
             children=[
-                html.Span(label, style={"color":colors["muted"],"fontSize":"24px"}),
+                html.Span(label, style={"color":colors["muted"],"fontSize":"17px"}),
                 html.Span(str(value), style={"color":color or colors["text"],
-                                              "fontSize":"26px","fontWeight":"600"}),
+                                              "fontSize":"18px","fontWeight":"600"}),
             ])
 
     return html.Div([
         html.Div(style={"display":"flex","alignItems":"center",
                         "justifyContent":"space-between","marginBottom":"20px"}, children=[
-            html.H3(gu_name, style={"margin":"0","fontSize":"20px",
+            html.H3(gu_name, style={"margin":"0","fontSize":"14px",
                                      "fontWeight":"700","color":colors["text"]}),
             html.Span("⚠ 급증" if spike else "✓ 정상",
-                style={"color":colors["danger"] if spike else colors["ok"],"fontSize":"22px",
+                style={"color":colors["danger"] if spike else colors["ok"],"fontSize":"15px",
                        "fontWeight":"700",
                        "backgroundColor":_hex_to_rgba(
                            colors["danger"] if spike else colors["ok"], 0.08),
                        "padding":"3px 10px","borderRadius":"12px"}),
         ]),
-        html.P("미분양 현황", style={"color":colors["muted"],"fontSize":"22px",
+        html.P("미분양 현황", style={"color":colors["muted"],"fontSize":"15px",
                                     "letterSpacing":"0.1em","margin":"0 0 4px",
                                     "textTransform":"uppercase"}),
         html.Div(style={**CARD,"marginBottom":"14px","padding":"12px 16px"}, children=[
@@ -684,14 +722,14 @@ def map_side_panel(gu_name, theme):
                      f"{change_rate:+.1f}%" if change_rate is not None else "-",
                      colors["danger"] if spike else colors["ok"]),
         ]),
-        html.P("실거래가", style={"color":colors["muted"],"fontSize":"22px",
+        html.P("실거래가", style={"color":colors["muted"],"fontSize":"15px",
                                   "letterSpacing":"0.1em","margin":"0 0 4px",
                                   "textTransform":"uppercase"}),
         html.Div(style={**CARD,"marginBottom":"14px","padding":"12px 16px"}, children=[
             stat_row("최근 3개월 평균",
                      f"{avg_price:,}만원" if avg_price else "-", colors["accent"]),
         ]),
-        html.P("최근 인허가", style={"color":colors["muted"],"fontSize":"22px",
+        html.P("최근 인허가", style={"color":colors["muted"],"fontSize":"15px",
                                      "letterSpacing":"0.1em","margin":"0 0 8px",
                                      "textTransform":"uppercase"}),
         html.Div(style={**CARD,"padding":"0"}, children=[
@@ -700,7 +738,7 @@ def map_side_panel(gu_name, theme):
                 columns=[{"name":c,"id":c} for c in ["인허가일","세대수","시공사"]],
                 **TABLE_STYLE,
             ) if not pm_rows.empty else html.P("인허가 내역 없음",
-                style={"color":colors["muted"],"padding":"12px","fontSize":"24px"}),
+                style={"color":colors["muted"],"padding":"12px","fontSize":"17px"}),
         ]),
     ])
 
@@ -737,7 +775,7 @@ def search_building_permit(n_clicks, sgg_cd, bjdong_cd, theme):
 
     if not sgg_cd or not bjdong_cd:
         return html.P("구·군과 동을 모두 선택해주세요.",
-                      style={"color": colors["warning"], "fontSize": "26px"})
+                      style={"color": colors["warning"], "fontSize": "18px"})
 
     from src.config import BUILDING_PERMIT_API_KEY
     endpoint = "https://apis.data.go.kr/1613000/HsPmsHubService/getHpBasisOulnInfo"
@@ -757,7 +795,7 @@ def search_building_permit(n_clicks, sgg_cd, bjdong_cd, theme):
 
         if not items:
             return html.P("해당 지역의 주택인허가 데이터가 없습니다.",
-                          style={"color": colors["muted"], "fontSize": "26px"})
+                          style={"color": colors["muted"], "fontSize": "18px"})
 
         def t(el, tag):
             node = el.find(tag)
@@ -781,7 +819,7 @@ def search_building_permit(n_clicks, sgg_cd, bjdong_cd, theme):
 
         return html.Div([
             html.P(f"조회 결과: {total}건",
-                   style={"color": colors["muted"], "fontSize": "24px", "margin": "0 0 12px"}),
+                   style={"color": colors["muted"], "fontSize": "17px", "margin": "0 0 12px"}),
             dash_table.DataTable(
                 data=df.to_dict("records"),
                 columns=[{"name": c, "id": c} for c in df.columns],
@@ -792,11 +830,11 @@ def search_building_permit(n_clicks, sgg_cd, bjdong_cd, theme):
 
     except requests.exceptions.Timeout:
         return html.P("요청 시간이 초과됐습니다. 다시 시도해주세요.",
-                      style={"color": colors["danger"], "fontSize": "26px"})
+                      style={"color": colors["danger"], "fontSize": "18px"})
     except Exception as e:
         return html.P(f"조회 중 오류가 발생했습니다: {str(e)}",
-                      style={"color": colors["danger"], "fontSize": "26px"})
+                      style={"color": colors["danger"], "fontSize": "18px"})
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=1111)
