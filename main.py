@@ -38,7 +38,7 @@ def run_dashboard(debug: bool = False) -> None:
     """Dash 대시보드 서버 실행"""
     from dashboards.app import app
     log.info("대시보드 시작: http://127.0.0.1:8050")
-    app.run(debug=debug, use_reloader=False)
+    app.run(host="127.0.0.1", port=8051, debug=debug, use_reloader=False)
 
 
 def run_scheduler() -> None:
