@@ -9,7 +9,24 @@
       "Bash(PYTHONIOENCODING=utf-8 timeout 20 ./venv/Scripts/python.exe main.py)",
       "Bash(PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 timeout 40 ./venv/Scripts/python.exe main.py)",
       "Bash(PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 timeout 90 ./venv/Scripts/python.exe main.py)",
-      "Bash(./venv/Scripts/python.exe -m py_compile src/db.py dashboards/app.py src/collectors/seed_dummy_data.py)"
+      "Bash(./venv/Scripts/python.exe -m py_compile src/db.py dashboards/app.py src/collectors/seed_dummy_data.py)",
+      "Bash(venv/Scripts/python.exe -c \"import dashboards.app\")",
+      "Bash(venv/Scripts/python.exe main.py --dashboard --debug)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:8050/)",
+      "Read(//tmp/**)",
+      "Bash(curl -s http://127.0.0.1:8050/)",
+      "Bash(curl -s -X POST http://127.0.0.1:8050/_dash-update-component -H 'Content-Type: application/json' -d '{\"output\":\"theme-store.data\",\"inputs\":[{\"id\":\"theme-toggle-btn\",\"property\":\"n_clicks\",\"value\":1}],\"changedPropIds\":[\"theme-toggle-btn.n_clicks\"],\"state\":[{\"id\":\"theme-store\",\"property\":\"data\",\"value\":\"dark\"}]}')",
+      "Bash(curl -s -X POST http://127.0.0.1:8050/_dash-update-component -H 'Content-Type: application/json' -d '{\"output\":\"page-content.children\",\"inputs\":[{\"id\":\"theme-store\",\"property\":\"data\",\"value\":\"light\"},{\"id\":\"active-tab-store\",\"property\":\"data\",\"value\":\"tab-map\"}],\"changedPropIds\":[\"theme-store.data\"]}')",
+      "Bash(venv/Scripts/python.exe -c \"import dash; print\\(dash.__version__\\)\")",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(venv/Scripts/python.exe main.py)",
+      "Bash(jobs -l)",
+      "Bash(curl -s -v http://127.0.0.1:8050/)",
+      "Bash(cat /tmp/main_run.log)",
+      "Bash(timeout 8 venv/Scripts/python.exe main.py --dashboard)",
+      "Bash(venv/Scripts/python.exe main.py --dashboard)",
+      "Bash(curl -s -o /tmp/page.html -w \"HTTP %{http_code}\\\\n\" http://127.0.0.1:8050/)"
     ]
   }
 }
