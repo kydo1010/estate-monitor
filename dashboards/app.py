@@ -670,6 +670,28 @@ def render_tab_content(active_tab, theme):
     return build_tab_content(active_tab, colors)
 
 
+# 지도(iframe) → Dash 브리지의 나머지 절반.
+# gu-click-interval이 500ms마다 깨워 주면 window.__lastGuClick을 읽어
+# 값이 바뀐 경우에만 clicked-gu-store에 쓴다.
+# no_update로 걸러 주지 않으면 0.5초마다 store가 갱신돼 map_side_panel이
+# 계속 다시 그려진다.
+clientside_callback(
+    """
+    function(n_intervals, current) {
+        var latest = window.__lastGuClick;
+        if (!latest || latest === current) {
+            return window.dash_clientside.no_update;
+        }
+        return latest;
+    }
+    """,
+    Output("clicked-gu-store", "data"),
+    Input("gu-click-interval", "n_intervals"),
+    State("clicked-gu-store", "data"),
+    prevent_initial_call=True,
+)
+
+
 @app.callback(
     Output("map-side-panel", "children"),
     Input("clicked-gu-store", "data"),

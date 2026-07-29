@@ -267,6 +267,17 @@
     }
 
     function onGuClick(guName) {
+      // Dash 브리지: 부모의 dcc.Interval(gu-click-interval)이 500ms마다
+      // window.__lastGuClick을 폴링해 clicked-gu-store로 옮긴다.
+      // 이 페이지는 부모와 같은 origin(/vworld-map.html)에서 서빙되므로
+      // 부모 전역에 직접 쓸 수 있다. 다른 origin으로 옮기면 여기서 막힌다.
+      try {
+        window.parent.__lastGuClick = guName;
+      } catch(e) {
+        console.warn('부모 window에 쓸 수 없습니다 (cross-origin?):', e);
+      }
+
+      // 향후 message 방식 리스너를 위해 postMessage도 함께 보낸다.
       window.parent.postMessage({ type: 'gu_click', name: guName }, '*');
     }
 
