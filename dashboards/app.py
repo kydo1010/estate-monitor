@@ -55,6 +55,7 @@ dashboards/app.py
 """
 
 import json
+import logging
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
@@ -72,6 +73,10 @@ from src.db import (
     get_avg_price_by_district, get_session,
     UnsoldHousing, BuildingPermit, Trade,
 )
+
+# 핸들러는 main.py의 basicConfig(data/app.log + stdout)를 그대로 탄다.
+# 이 모듈을 단독 임포트하면 핸들러가 없어 로그가 보이지 않는 것이 정상이다.
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 색상 토큰 (다크모드 / 라이트모드)
@@ -181,6 +186,44 @@ def kpi(colors, label, value, color=None, sub=None):
         html.P(sub or "", style={"color": colors["muted"], "fontSize": "15px", "margin": "6px 0 0"}),
     ])
 
+
+def fmt_date(value) -> str:
+    """DataFrame의 min()/max() 결과를 YYYY-MM-DD로. 비었거나 파싱 불가면 '-'."""
+    if value is None or pd.isna(value):
+        return "-"
+    ts = pd.to_datetime(value, errors="coerce")
+    return "-" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
+
+
+def fmt_period(series) -> str:
+    """`YYYY-MM-DD ~ YYYY-MM-DD`. 시리즈가 비었으면 '-'."""
+    if series is None or len(series) == 0:
+        return "-"
+    return f"{fmt_date(series.min())} ~ {fmt_date(series.max())}"
+
+
+def data_banner(colors, title, *lines):
+    """
+    탭 콘텐츠 최상단의 데이터 출처·기간 배너.
+
+    기간·건수는 전부 호출부에서 DataFrame으로 계산해 넘긴다. 여기에 날짜나
+    건수를 하드코딩하면 DB가 갱신돼도 화면만 과거에 머무른다.
+    """
+    return html.Div(style={
+        "background": colors["surface2"],
+        "border": f"1px solid {colors['border']}",
+        "borderLeft": f"3px solid {colors['accent2']}",
+        "borderRadius": "8px",
+        "padding": "12px 16px",
+        "marginBottom": "16px",
+    }, children=[
+        html.P(title, style={"color": colors["text"], "fontSize": "18px",
+                             "fontWeight": "700", "margin": "0 0 4px"}),
+        *[html.P(line, style={"color": colors["muted"], "fontSize": "15px",
+                              "margin": "0"})
+          for line in lines if line],
+    ])
+
 # ---------------------------------------------------------------------------
 # 데이터 로드
 # ---------------------------------------------------------------------------
@@ -200,12 +243,62 @@ def load_price_df():
     rows = get_avg_price_by_district(start, end)
     return pd.DataFrame(rows, columns=["지역구", "평균거래가", "거래건수"])
 
+# permit_df 정제 규칙.
+#
+# building_permits 테이블은 성격이 다른 두 수집기가 공유한다 (CLAUDE.md 참고).
+# building_permit.py(건축HUB)는 developer←platPlc(주소), contractor←bldNm(건물명)을
+# 넣으므로 "시행사"에 주소가, "시공사"에 단지명이 들어온 행이 섞인다.
+# 시행사 값의 주소 흔적으로 그런 행을 골라내 두 컬럼을 "-"로 비운다.
+# (행 자체는 남긴다 — 지역구·인허가일·세대수는 그대로 쓸 수 있는 값이다.)
+PERMIT_ADDRESS_MARKERS = ("부산광역시", "경상남도", "블록")
+
+# 2020년 이전 인허가 건은 극소수인데 x축을 20년으로 늘려 최근 추세를 눌러버린다.
+PERMIT_MIN_DATE = pd.Timestamp("2020-01-01")
+
+# 지역구는 반드시 config의 매핑을 거친다. "부산"처럼 구·군이 아닌 값이 섞여
+# 들어와 구별 집계 어디에도 잡히지 않는 사례가 있었다.
+BUSAN_DISTRICT_NAMES = set(BUSAN_DISTRICT_CODES.values())
+
+
 def load_permit_df():
     with get_session() as s:
         rows = s.query(BuildingPermit).all()
-        return pd.DataFrame([{"지역구": r.district, "인허가일": r.permit_date,
-                               "세대수": r.household_count, "시행사": r.developer,
-                               "시공사": r.contractor} for r in rows])
+        df = pd.DataFrame([{"지역구": r.district, "인허가일": r.permit_date,
+                            "세대수": r.household_count, "시행사": r.developer,
+                            "시공사": r.contractor} for r in rows])
+    if df.empty:
+        return df
+
+    n_raw = len(df)
+
+    # (1) 부산 16개 구·군이 아닌 지역구 제거
+    df = df[df["지역구"].isin(BUSAN_DISTRICT_NAMES)]
+    n_bad_district = n_raw - len(df)
+
+    # (2) 2020-01-01 이전 인허가일 제거.
+    #     인허가일 컬럼은 원래 dtype(date)을 유지해야 한다 — Timestamp로 바꾸면
+    #     사이드패널의 astype(str)이 "2026-07-24 00:00:00"으로 늘어진다.
+    #     그래서 비교용 시리즈만 따로 파싱하고 원본은 건드리지 않는다.
+    #     파싱 불가/결측(NaT)은 "2020년 이전"이라 단정할 수 없으므로 남긴다.
+    parsed = pd.to_datetime(df["인허가일"], errors="coerce")
+    n_before = len(df)
+    df = df[~(parsed < PERMIT_MIN_DATE)].copy()
+    n_too_old = n_before - len(df)
+
+    # (3) 시행사에 주소가 들어온 행의 시행사·시공사를 "-"로 치환
+    polluted = pd.Series(False, index=df.index)
+    developer = df["시행사"].fillna("")
+    for marker in PERMIT_ADDRESS_MARKERS:
+        polluted |= developer.str.contains(marker, regex=False)
+    df.loc[polluted, ["시행사", "시공사"]] = "-"
+
+    logger.info(
+        "permit_df 정제: %d행 → %d행 "
+        "(비부산 지역구 %d행 제거, %s 이전 %d행 제거, 시행사·시공사 오염 %d행 '-' 치환)",
+        n_raw, len(df), n_bad_district, PERMIT_MIN_DATE.date(), n_too_old,
+        int(polluted.sum()),
+    )
+    return df
 
 def load_trend_df():
     with get_session() as s:
@@ -225,14 +318,34 @@ trend_df   = load_trend_df()
 n_spike    = int(unsold_df["급증여부"].sum()) if not unsold_df.empty else 0
 updated_at = date.today().strftime("%Y-%m-%d")
 
+# 지도(iframe)의 구·군 색상용 {구·군명: 미분양세대수} 딕셔너리.
+# - 한 구에 여러 기준월 행이 있을 수 있어 drop_duplicates로 첫 행만 남긴다.
+#   unsold_df는 증감률 내림차순이므로 map_side_panel의 `.values[0]`과 같은 행을 고른다.
+# - numpy 정수/NaN은 그대로 두면 JSON 직렬화나 iframe 쪽 비교에서 걸리므로
+#   파이썬 int로 정규화한다.
+unsold_dict = (
+    {str(k): int(v) for k, v in
+     unsold_df.drop_duplicates("지역구")
+              .set_index("지역구")["미분양세대수"].fillna(0).items()}
+    if not unsold_df.empty else {}
+)
+
 # ---------------------------------------------------------------------------
 # 탭별 레이아웃
 # ---------------------------------------------------------------------------
 
 def build_tab_map(colors):
     CARD = get_card_style(colors)
-    
+
+    base_month = unsold_df["기준월"].max() if not unsold_df.empty else "-"
+
     return html.Div([
+        data_banner(
+            colors,
+            f"미분양 현황 기준월 {base_month}",
+            "출처: 부산광역시 공동주택 미분양 현황 API",
+            "매주 월요일 07:00 자동 갱신",
+        ),
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
                  children=[
                      kpi(colors, "부산 평균 거래가",
@@ -269,6 +382,17 @@ def build_tab_map(colors):
         #   (1) React가 렌더한 <script>는 브라우저가 실행하지 않는다
         #   (2) 'dash-store-update'라는 이벤트를 Dash가 듣지 않는다
         dcc.Interval(id="gu-click-interval", interval=500, n_intervals=0),
+
+        # Dash → 지도(iframe) 브리지. 미분양 세대수를 postMessage로 넘겨야
+        # iframe이 구별 색을 칠한다 (넘기지 않으면 전 구역이 #1a6b3c로 남는다).
+        dcc.Store(id="unsold-data-store", data=unsold_dict),
+        # iframe은 외부(GitHub)에서 행정동 GeoJSON을 받아 레이어를 만들기까지
+        # 수 초가 걸리고, 그 전에는 message 리스너조차 등록돼 있지 않을 수 있다.
+        # 그래서 1초에 한 번 재전송하고, 레이어가 실제로 생긴 것을 확인하면
+        # 아래 clientside_callback이 disabled=True를 돌려 스스로 멈춘다
+        # (최대 20초. 그 안에 지도가 못 뜨면 어차피 칠할 대상이 없다).
+        dcc.Interval(id="unsold-inject-interval", interval=1000,
+                     n_intervals=0, max_intervals=20),
     ])
 
 
@@ -295,7 +419,21 @@ def build_tab_unsold(colors, df):
     spike_rows = spike_df[["지역구","기준월","미분양세대수","전월세대수","증감률"]].copy()
     spike_rows["증감률"] = spike_rows["증감률"].apply(lambda x: f"{x:+.1f}%")
 
+    base_month = df["기준월"].max() if not df.empty else "-"
+    # 급증이 0건인 이유는 대개 "급증이 없어서"가 아니라 "전월 행이 없어 증감률을
+    # 계산하지 못해서"다 (base_month가 API 기준일이 아닌 실행일이라 소급이 안 된다).
+    # 빈 표를 보고 안심하지 않도록 그 사정을 배너에 적어 둔다.
+    spike_note = ("※ 현재 전월 비교 데이터 미수집 — 증감률을 계산할 수 없어 급증 판정이 비어 있습니다"
+                  if n_spike_local == 0 else None)
+
     return html.Div([
+        data_banner(
+            colors,
+            f"미분양 현황 기준월 {base_month}",
+            "출처: 부산광역시 공동주택 미분양 현황 API",
+            "매주 월요일 07:00 자동 갱신",
+            spike_note,
+        ),
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
                  children=[kpi(colors, "모니터링 지역", n_total, sub="부산 16개 구·군"),
                             kpi(colors, "급증 타깃", n_spike_local, colors["danger"],
@@ -314,8 +452,18 @@ def build_tab_unsold(colors, df):
 
 def build_tab_price(colors, df, tdf):
     PT = get_plotly_template(colors)
+
+    # 기간·건수는 집계본(df)이 아니라 거래 원본(tdf)에서 뽑는다.
+    # df는 구·군 16행짜리 평균 집계라 거래일 자체가 들어 있지 않다.
+    banner = data_banner(
+        colors,
+        f"실거래 {len(tdf):,}건  ·  {fmt_period(tdf['거래일'] if not tdf.empty else None)}",
+        "출처: 국토교통부 실거래가 API (아파트·분양권 전매·오피스텔 3종)",
+        "최근 3개월 · 매주 월요일 07:00 자동 갱신",
+    )
+
     if df.empty:
-        return html.P("데이터 없음", style={"color":colors["muted"]})
+        return html.Div([banner, html.P("데이터 없음", style={"color":colors["muted"]})])
 
     avg_all = int(df["평균거래가"].mean())
     top_gu  = df.loc[df["평균거래가"].idxmax(), "지역구"]
@@ -345,6 +493,7 @@ def build_tab_price(colors, df, tdf):
                         xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
 
     return html.Div([
+        banner,
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
                  children=[kpi(colors, "부산 평균", f"{avg_all:,}만원", colors["accent"]),
                             kpi(colors, "최고가 지역구", top_gu),
@@ -417,6 +566,12 @@ def build_tab_permit(colors, df):
         ])
 
     return html.Div([
+        data_banner(
+            colors,
+            f"인허가 {len(df):,}건  ·  {fmt_period(df['인허가일'] if not df.empty else None)}",
+            "출처: 청약홈 분양정보 API (배치 수집) + 건축HUB 주택인허가 API (실시간 검색)",
+            "매주 월요일 07:00 자동 갱신",
+        ),
         summary_block,
 
         # 건축HUB 단지 검색 — 국토교통부 건축HUB 주택인허가정보 서비스는
@@ -688,6 +843,42 @@ clientside_callback(
     Output("clicked-gu-store", "data"),
     Input("gu-click-interval", "n_intervals"),
     State("clicked-gu-store", "data"),
+    prevent_initial_call=True,
+)
+
+
+# Dash → 지도(iframe) 브리지의 나머지 절반.
+# unsold-inject-interval이 깨울 때마다 unsold-data-store의 내용을
+# iframe으로 postMessage한다. iframe 쪽 리스너는
+#   (1) 레이어가 이미 있으면 refreshColors()로 다시 칠하고
+#   (2) 아직 없으면 전역 unsoldData만 갱신해 두었다가 buildGuLayer가 그 값으로 칠한다
+# 어느 쪽이든 한 번 도착하기만 하면 되므로, 도착 여부를 확신할 수 있을 때까지
+# 재전송한다. same-origin(/vworld-map.html)이라 iframe 전역 layerList를 직접
+# 읽어 레이어 생성 여부로 판정한다.
+clientside_callback(
+    """
+    function(n_intervals, unsoldData) {
+        var iframe = document.getElementById('vworld-iframe');
+        if (!iframe || !iframe.contentWindow) {
+            return window.dash_clientside.no_update;
+        }
+        iframe.contentWindow.postMessage(
+            { type: 'unsold_data', data: unsoldData || {} }, '*');
+        try {
+            var layers = iframe.contentWindow.layerList;
+            if (layers && layers.length > 0) {
+                return true;   // 레이어가 이 메시지를 받았다 — Interval 정지
+            }
+        } catch (e) {
+            // cross-origin으로 바뀌면 판정이 불가능하다. 그때는 max_intervals까지
+            // 계속 쏘는 편이 안전하다 (postMessage 자체는 여전히 통한다).
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("unsold-inject-interval", "disabled"),
+    Input("unsold-inject-interval", "n_intervals"),
+    State("unsold-data-store", "data"),
     prevent_initial_call=True,
 )
 
