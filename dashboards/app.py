@@ -94,6 +94,13 @@ DARK_COLORS = {
     "text":     "#e8eaf0",
     "muted":    "#7a8499",
     "chart_bg": "#161b27",
+    # 시공사 도넛 11조각(상위 10 + 기타)용 순서 고정 팔레트. 마지막은 항상 기타=회색.
+    # 색은 눈대중이 아니라 검증기(dataviz/scripts/validate_palette.js)를 돌려
+    # 고른 순서다 — 도넛은 조각이 원형으로 이어지므로 마지막↔첫 조각까지
+    # 인접쌍에 넣고 검사했고, 이 순서에서 다크 표면(#161b27) 기준
+    # 최악 인접쌍 CVD ΔE 12.8 / 정상시각 ΔE 19.8로 기준(8 / 15)을 넘는다.
+    "donut": ["#d95926", "#9085e9", "#199e70", "#86b6ef", "#e66767", "#3987e5",
+              "#c98500", "#184f95", "#d55181", "#008300", "#7a8499"],
 }
 
 LIGHT_COLORS = {
@@ -109,9 +116,19 @@ LIGHT_COLORS = {
     "text":     "#1a2234",
     "muted":    "#64748b",
     "chart_bg": "#ffffff",
+    # 다크 팔레트와 같은 색상 계열을 라이트 표면(#ffffff)에 맞춰 다시 고른 것.
+    # 자동 반전이 아니라 같은 검증을 따로 통과한 순서다
+    # (최악 인접쌍 CVD ΔE 14.1 / 정상시각 ΔE 19.7).
+    "donut": ["#eb6834", "#4a3aa7", "#1baf7a", "#86b6ef", "#e34948", "#2a78d6",
+              "#eda100", "#184f95", "#e87ba4", "#008300", "#64748b"],
 }
 
 DEFAULT_THEME = "dark"
+
+# 시공사 도넛에 개별 조각으로 남길 상위 업체 수. 나머지는 "기타"로 합친다.
+DONUT_TOP_N = 10
+# 범례에 표시할 시공사명 최대 길이(초과분은 …으로 줄이고 전체 이름은 호버로).
+DONUT_LABEL_MAX = 18
 
 # theme-toggle-btn은 헤더 우측 상단에 고정 배치되므로, 헤더 콘텐츠가 버튼과
 # 겹치지 않도록 헤더 우측 padding으로 이만큼 여백을 확보해둔다.
@@ -126,6 +143,23 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     hex_color = hex_color.lstrip("#")
     r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _ink_on(hex_color: str) -> str:
+    """
+    조각 위에 얹는 글자색. 밝은 채움에는 검정, 어두운 채움에는 흰색.
+
+    도넛 팔레트는 노랑(#eda100)부터 남색(#184f95)까지 밝기 폭이 넓어서
+    한 가지 글자색으로 고정하면 어느 한쪽 조각의 % 라벨이 반드시 뭉갠다.
+    (WCAG 상대휘도 기준, 0.4를 경계로 나눈다.)
+    """
+    h = hex_color.lstrip("#")
+    ch = []
+    for i in (0, 2, 4):
+        c = int(h[i:i + 2], 16) / 255
+        ch.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    lum = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+    return "#1a2234" if lum > 0.4 else "#ffffff"
 
 
 def get_plotly_template(colors: dict) -> dict:
@@ -481,16 +515,28 @@ def build_tab_price(colors, df, tdf):
                           xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
 
     fig_t = go.Figure()
+    months = []
     if not tdf.empty:
         m = tdf.groupby("월")["거래금액"].mean().reset_index()
+        # "2026-05" 같은 문자열 정렬은 지금 데이터에선 우연히 시간순과 같지만
+        # 연도가 넘어가면 깨진다. Period로 바꿔 정렬한 뒤 문자열로 되돌린다.
+        m = m.assign(_p=pd.PeriodIndex(m["월"], freq="M")).sort_values("_p")
+        months = m["월"].tolist()
         fig_t.add_trace(go.Scatter(
             x=m["월"], y=m["거래금액"], mode="lines+markers",
             line=dict(color=colors["accent"], width=2),
             marker=dict(size=12, color=colors["accent"]),
             fill="tozeroy", fillcolor=_hex_to_rgba(colors["accent"], 0.08),
         ))
-    fig_t.update_layout(**PT, title="부산 전체 월별 평균 거래가 추이", height=260,
-                        xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
+    fig_t.update_layout(
+        **PT, title="부산 전체 월별 평균 거래가 추이", height=260,
+        # type="category"가 핵심이다. 축 타입을 자동에 맡기면 Plotly가 "2026-07"을
+        # 날짜로 파싱해 날짜축으로 바꾸고, 그러면 눈금을 스스로 고르기 때문에
+        # 마지막 달(예: 7월)의 라벨이 잘려 데이터는 그려졌는데 없는 것처럼 보인다.
+        # 카테고리축이면 집계된 달마다 눈금 하나가 categoryarray 순서로 찍힌다.
+        xaxis=dict(gridcolor=colors["border"], type="category",
+                   categoryorder="array", categoryarray=months),
+        yaxis=dict(gridcolor=colors["border"]))
 
     return html.Div([
         banner,
@@ -524,17 +570,43 @@ def build_tab_permit(colors, df):
         fig.update_layout(**PT, title="구·군별 신규 착공·인허가 세대수", height=560,
                           xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
 
-        cd = df.groupby("시공사")["세대수"].sum().reset_index()
+        # 시공사는 200개가 넘어 전부 그리면 조각이 실선처럼 뭉갠다.
+        # 세대수 상위 10개만 남기고 나머지는 "기타" 한 조각으로 합친다.
+        cd_all = df.groupby("시공사")["세대수"].sum().sort_values(ascending=False)
+        cd = cd_all.head(DONUT_TOP_N).reset_index()
+        rest = cd_all.iloc[DONUT_TOP_N:]
+        if not rest.empty:
+            cd = pd.concat([cd, pd.DataFrame([{"시공사": f"기타 ({len(rest)}개사)",
+                                               "세대수": rest.sum()}])],
+                           ignore_index=True)
+
+        # 색은 조각 수만큼만 잘라 쓴다. 기타는 항상 팔레트 마지막(회색)을 받아야
+        # 하므로 상위 n개 색 + 마지막 색으로 조립한다 (순서를 돌려 쓰지 않는다).
+        palette = colors["donut"]
+        pie_colors = list(palette[:len(cd)])
+        if not rest.empty:
+            pie_colors[-1] = palette[-1]
+
+        # 시공사명은 컨소시엄이 통째로 들어와 40자를 넘기도 한다. 범례는 줄바꿈을
+        # 하지 않아 그대로 두면 차트 밖으로 잘려 나가므로, 범례에는 줄인 이름을
+        # 쓰고 전체 이름은 호버로 보여준다.
+        full_names = cd["시공사"].tolist()
+        legend_names = [n if len(n) <= DONUT_LABEL_MAX
+                        else n[:DONUT_LABEL_MAX - 1] + "…" for n in full_names]
+
         fig_pie = go.Figure(go.Pie(
-            labels=cd["시공사"], values=cd["세대수"], hole=0.45,
-            marker=dict(colors=[colors["accent"],colors["accent2"],colors["ok"],
-                                 colors["danger"],colors["muted"]]),
-            textfont=dict(color=colors["text"]),
+            labels=legend_names, values=cd["세대수"], hole=0.45,
+            marker=dict(colors=pie_colors,
+                        line=dict(color=colors["chart_bg"], width=2)),
+            sort=False,
+            textfont=dict(color=[_ink_on(c) for c in pie_colors]),
             textposition="inside", textinfo="percent",
+            customdata=full_names,
+            hovertemplate="%{customdata}<br>%{value:,}세대 (%{percent})<extra></extra>",
         ))
         fig_pie.update_layout(
             **{**PT, "margin": dict(l=0, r=220, t=40, b=0)},
-            title="시공사별 세대수 점유율", height=480,
+            title=f"시공사별 세대수 점유율 (상위 {DONUT_TOP_N}개사 + 기타)", height=480,
             showlegend=True,
             legend=dict(
                 orientation="v",
