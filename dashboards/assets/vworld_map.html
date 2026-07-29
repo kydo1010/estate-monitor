@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -14,6 +14,7 @@
       border-radius: 8px; padding: 10px 14px;
       font-family: 'Malgun Gothic', sans-serif; font-size: 12px; color: #333;
       z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      display: none;              /* 색상 오버레이가 실제로 떴을 때만 보여 준다 */
     }
     #legend h4 { font-size: 11px; color: #666; margin-bottom: 6px; }
     .legend-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
@@ -62,15 +63,89 @@
   </div>
 
   <script>
-    var unsoldData = {};
-    var map;        // vw.ol3.Map 인스턴스. ol.Map을 상속하므로 그대로 ol.Map처럼 쓴다.
-    var layerList = [];
+    /* ==================================================================
+       외부 GeoJSON(github vuski/admdongkor) 의존을 걷어내고 행정구역을
+       V-World 자체 소스로만 그린다. 두 갈래를 함께 쓴다.
+
+         (A) WMS 행정구역 레이어  — api.vworld.kr/req/wms, lt_c_adsigg /
+             lt_c_ademd. 타일 이미지라서 CORS와 무관하게 무조건 뜬다.
+             경계선·라벨의 "보이는 밑그림"을 담당한다.
+         (B) 데이터 API           — api.vworld.kr/req/data,
+             LT_C_ADSIGG_INFO / LT_C_ADEMD_INFO. GeoJSON 지오메트리를 주므로
+             ol.layer.Vector로 올려 ① 구별 미분양 색칠 ② 동 단위 클릭 판정을
+             담당한다.
+
+       왜 (B)가 필요한가: WMS는 래스터다. forEachFeatureAtPixel은 벡터
+       피처만 돌려주므로 WMS 레이어에서는 영원히 아무것도 잡히지 않는다.
+       클릭으로 구·동 이름을 얻으려면 실제 지오메트리(B)를 갖고 있거나
+       GetFeatureInfo를 왕복해야 한다.
+
+       그래서 폴백을 3단으로 둔다.
+         1) 데이터 API 성공        → 벡터 클릭 + 색상 오버레이 + 범례
+         2) 데이터 API 실패        → WMS GetFeatureInfo로 이름만 얻어 클릭 유지,
+                                     색상 오버레이·범례는 포기(범례 숨김)
+         3) 둘 다 실패             → 지도만 표시, 클릭 무반응(콘솔에 경고)
+
+       데이터 API는 브라우저에서 CORS가 막힐 수 있다. fetch가 거부되면
+       같은 요청을 JSONP(callback=)로 한 번 더 시도한다.
+       ================================================================== */
+
+    var VWORLD_KEY = '__VWORLD_API_KEY__';
+
+    var DATA_API = 'https://api.vworld.kr/req/data';
+    var WMS_API  = 'https://api.vworld.kr/req/wms';
+
+    // WMS 레이어명은 소문자, 데이터 API는 대문자 _INFO 접미사다 (서로 다른 계열).
+    var WMS_LAYERS   = 'lt_c_adsigg,lt_c_ademd';
+    var WMS_DONG     = 'lt_c_ademd';
+    var DATA_SIGG    = 'LT_C_ADSIGG_INFO';
+    var DATA_EMD     = 'LT_C_ADEMD_INFO';
+
+    var BUSAN_LON  = 129.0756;
+    var BUSAN_LAT  = 35.1796;
+    var BUSAN_ZOOM = 11;
+
+    // 데이터 API는 전국을 주므로 부산 외곽을 넉넉히 감싸는 BOX로 1차 필터하고,
+    // 걸려 들어온 김해·양산·울산은 아래 isBusan()에서 코드로 걷어낸다.
+    var BUSAN_BBOX  = [128.70, 34.80, 129.40, 35.45];   // EPSG:4326
+    var BUSAN_SIDO  = '26';
+
+    var PAGE_SIZE = 1000;      // 데이터 API 1회 최대치
+    var MAX_PAGES = 3;
+
+    /* ---------------- 상태 ---------------- */
+    var unsoldData  = {};
+    var map;                   // vw.ol3.Map
+    var olMap;                 // ol.Map (map 자체이거나 map.map)
+    var wmsSource   = null;
+    var guLayer     = null;    // 구·군 색상 폴리곤
+    var dongSource  = null;    // 동 단위 클릭 판정용
+    var dongLayer   = null;
+    var guNameByCode = {};     // '26110' → '중구'
+    var wmsInfoWarned = false;
+
+    // Dash 쪽에서 준비 여부를 들여다볼 수 있게 열어 둔다.
+    window.vworldReady = false;
 
     function setLoading(msg) {
       var el = document.getElementById('loading');
       if (!el) return;
       el.textContent = msg;
       el.style.display = 'block';
+    }
+
+    function hideLoading() {
+      var el = document.getElementById('loading');
+      if (el) el.style.display = 'none';
+    }
+
+    function showLegend(on) {
+      var el = document.getElementById('legend');
+      if (el) el.style.display = on ? 'block' : 'none';
+    }
+
+    function currentDomain() {
+      return window.location.protocol + '//' + window.location.host;
     }
 
     function getColor(unsoldCount) {
@@ -81,9 +156,9 @@
       return '#e05c5c';
     }
 
-    var BUSAN_LON  = 129.0756;
-    var BUSAN_LAT  = 35.1796;
-    var BUSAN_ZOOM = 11;
+    /* ==================================================================
+       지도 기동
+       ================================================================== */
 
     function initMap() {
       try {
@@ -111,21 +186,22 @@
 
         map = new vw.ol3.Map('map', mapOptions);
 
-        // TODO(임시 진단): vw.ol3.Map의 실제 구조 확인용. 확인 끝나면 지울 것.
-        console.log('[vworld] typeof map.addLayer =', typeof map.addLayer,
-                    '| typeof map.map =', typeof map.map,
-                    '| instanceof ol.Map =',
-                    (typeof ol !== 'undefined' && ol.Map) ? (map instanceof ol.Map) : 'n/a');
-
-        // vw.ol3.Map은 ol.Map을 상속하므로 map 자체가 ol.Map이다.
-        // 혹시 아니라면 여기서 바로 잡아 낸다 (뒤에서 addLayer가 조용히 실패하는 것보다 낫다).
-        if (typeof map.addLayer !== 'function') {
-          throw new Error('map.addLayer가 없습니다 (typeof map.map = ' + typeof map.map + ')');
+        // vw.ol3.Map은 ol.Map을 상속하므로 보통 map 자체가 ol.Map이다.
+        // 빌드에 따라 map.map에 감싸 두는 경우가 있어 둘 다 받아 준다.
+        olMap = (typeof map.addLayer === 'function') ? map
+              : (map.map && typeof map.map.addLayer === 'function') ? map.map
+              : null;
+        if (!olMap) {
+          throw new Error('ol.Map을 찾을 수 없습니다 (typeof map.map = ' + typeof map.map + ')');
         }
 
-        document.getElementById('loading').style.display = 'none';
-        loadBusanGeoJSON();
-      } catch(e) {
+        hideLoading();
+        window.vworldReady = true;
+
+        addBoundaryLayer();     // (A) WMS 행정구역 — 실패해도 아래로 계속 간다
+        bindClick();            // 클릭 핸들러는 레이어 로딩과 무관하게 미리 걸어 둔다
+        loadAdminVectors();     // (B) 데이터 API — 비동기
+      } catch (e) {
         var missing = missingDeps();
         setLoading('지도 초기화 실패: ' + e.message
                    + (missing.length ? ' (누락: ' + missing.join(', ') + ')' : ''));
@@ -133,167 +209,429 @@
       }
     }
 
-    function loadBusanGeoJSON() {
-      fetch('https://raw.githubusercontent.com/vuski/admdongkor/master/ver20230701/HangJeongDong_ver20230701.geojson')
-        .then(function(r) {
+    /* ==================================================================
+       (A) V-World WMS 행정구역 레이어
+       ================================================================== */
+
+    function addBoundaryLayer() {
+      // 참고: map.addWMSBoundaryLayer(...)는 V-World 2D API에 존재하지 않는다
+      // (로더가 노출하는 vw.ol3.Map에도, 공개 문서에도 없음). 혹시 쓰는 빌드가
+      // 있으면 그대로 쓰고, 없으면 같은 결과를 ol.source.TileWMS로 직접 만든다.
+      if (typeof map.addWMSBoundaryLayer === 'function') {
+        try {
+          map.addWMSBoundaryLayer('busan_gu', DATA_SIGG, '2023');
+          console.log('[vworld] addWMSBoundaryLayer 사용');
+          return;
+        } catch (e) {
+          console.warn('addWMSBoundaryLayer 실패 — TileWMS로 대체합니다:', e);
+        }
+      }
+
+      try {
+        wmsSource = new ol.source.TileWMS({
+          url: WMS_API,
+          // V-World WMS는 STYLES를 생략하면 예외를 뱉는다. 레이어명과 같은 값을 준다.
+          params: {
+            LAYERS:      WMS_LAYERS,
+            STYLES:      WMS_LAYERS,
+            FORMAT:      'image/png',
+            TRANSPARENT: true,
+            KEY:         VWORLD_KEY,
+            DOMAIN:      currentDomain(),
+          },
+          serverType: 'geoserver',
+          // 타일을 <img>로 받게 둔다. 'anonymous'로 바꾸면 CORS 헤더가 없는
+          // 응답에서 타일이 통째로 깨진다.
+          crossOrigin: null,
+        });
+
+        // 색상 오버레이(반투명)가 위에 얹히므로 경계선이 가려지지 않는다.
+        olMap.addLayer(new ol.layer.Tile({ source: wmsSource, opacity: 0.9 }));
+        console.log('[vworld] WMS 행정구역 레이어 추가:', WMS_LAYERS);
+      } catch (e) {
+        console.warn('WMS 행정구역 레이어 생성 실패:', e);
+        wmsSource = null;
+      }
+    }
+
+    /* ==================================================================
+       (B) 데이터 API → 벡터 레이어
+       ================================================================== */
+
+    function loadAdminVectors() {
+      // 구·군을 먼저 받아 guNameByCode를 채워 두면 동 피처의 구 이름을
+      // 코드 앞 5자리로 역참조할 수 있다. 다만 full_nm 파싱으로도 구할 수
+      // 있으므로 어느 한쪽이 실패해도 나머지는 살린다.
+      fetchAdmin(DATA_SIGG)
+        .then(function (features) {
+          buildGuLayer(features);
+        })
+        .catch(function (e) {
+          console.warn('구·군 지오메트리 로드 실패 — 색상 오버레이를 건너뜁니다:', e);
+          showLegend(false);
+        })
+        .then(function () {
+          return fetchAdmin(DATA_EMD);
+        })
+        .then(function (features) {
+          buildDongLayer(features);
+        })
+        .catch(function (e) {
+          console.warn('읍면동 지오메트리 로드 실패 — 클릭은 WMS GetFeatureInfo로 처리합니다:', e);
+        });
+    }
+
+    // 지정한 데이터셋의 부산 피처를 전부(페이지를 넘겨가며) 모아 온다.
+    function fetchAdmin(dataName) {
+      var acc = [];
+
+      function nextPage(page) {
+        return requestPage(dataName, page).then(function (fc) {
+          var read = readBusanFeatures(fc);
+          acc = acc.concat(read.features);
+          // 꽉 찬 페이지가 오면 뒤가 더 있을 수 있다.
+          if (read.rawCount >= PAGE_SIZE && page < MAX_PAGES) {
+            return nextPage(page + 1);
+          }
+          return acc;
+        });
+      }
+
+      return nextPage(1).then(function (features) {
+        if (!features.length) {
+          throw new Error(dataName + ': 부산 피처가 0건입니다');
+        }
+        console.log('[vworld] ' + dataName + ' 부산 피처 ' + features.length + '건');
+        return features;
+      });
+    }
+
+    function requestPage(dataName, page) {
+      var params = {
+        service:    'data',
+        request:    'GetFeature',
+        version:    '2.0',
+        key:        VWORLD_KEY,
+        domain:     currentDomain(),
+        data:       dataName,
+        format:     'json',
+        errorformat:'json',
+        size:       PAGE_SIZE,
+        page:       page,
+        geometry:   'true',
+        attribute:  'true',
+        crs:        'EPSG:4326',
+        geomFilter: 'BOX(' + BUSAN_BBOX.join(',') + ')',
+      };
+      return getJson(DATA_API, params).then(unwrapFeatureCollection);
+    }
+
+    function unwrapFeatureCollection(payload) {
+      var res = payload && payload.response;
+      if (!res) throw new Error('예상과 다른 응답 형식');
+      if (res.status && res.status !== 'OK') {
+        var msg = (res.error && (res.error.text || res.error.code)) || res.status;
+        throw new Error('데이터 API 오류: ' + msg);
+      }
+      var fc = res.result && res.result.featureCollection;
+      if (!fc || !fc.features) throw new Error('featureCollection이 비어 있습니다');
+      return fc;
+    }
+
+    /* --- fetch(CORS) → JSONP 폴백 -------------------------------------- */
+
+    function buildUrl(base, params) {
+      var qs = Object.keys(params).map(function (k) {
+        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+      }).join('&');
+      return base + '?' + qs;
+    }
+
+    function getJson(base, params) {
+      return fetch(buildUrl(base, params))
+        .then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
         })
-        .catch(function(e) {
-          console.error('GeoJSON 로드 실패:', e);
-          setLoading('GeoJSON 로드 실패: ' + e.message);
-          throw e;                       // 아래 렌더링 단계로는 넘기지 않는다
-        })
-        // 렌더링 실패를 "로드 실패"로 뭉뚱그리지 않도록 catch를 분리한다.
-        // (한 체인으로 두면 buildGuLayer가 던진 에러까지 GeoJSON 탓으로 표시된다)
-        .then(function(data) {
-          try {
-            buildGuLayer(data);
-          } catch(e) {
-            console.error('구·군 레이어 생성 실패:', e);
-            setLoading('구·군 레이어 생성 실패: ' + e.message);
-          }
-        }, function() { /* 로드 실패는 위에서 이미 보고함 */ });
+        .catch(function (e) {
+          // CORS 거부는 TypeError로 떨어져 상태코드조차 못 본다.
+          // 스크립트 태그는 CORS를 타지 않으므로 JSONP로 한 번 더 시도한다.
+          console.warn('fetch 실패 — JSONP로 재시도합니다:', e.message);
+          return getJsonp(base, params);
+        });
     }
 
-    function buildGuLayer(data) {
-      var busanFeatures = data.features.filter(function(f) {
-        return f.properties.sido === '26';
+    var jsonpSeq = 0;
+
+    function getJsonp(base, params) {
+      return new Promise(function (resolve, reject) {
+        var cbName = '__vworldJsonp' + (++jsonpSeq);
+        var script = document.createElement('script');
+        var timer;
+
+        function cleanup() {
+          clearTimeout(timer);
+          try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[cbName] = function (data) {
+          cleanup();
+          resolve(data);
+        };
+
+        // callback을 지원하지 않으면 서버가 생 JSON을 돌려주고, 그건 스크립트로
+        // 실행될 수 없어 onerror 또는 타임아웃으로 떨어진다. 어느 쪽이든 reject.
+        var withCb = {};
+        Object.keys(params).forEach(function (k) { withCb[k] = params[k]; });
+        withCb.callback = cbName;
+
+        script.src = buildUrl(base, withCb);
+        script.onerror = function () {
+          cleanup();
+          reject(new Error('JSONP 로드 실패'));
+        };
+        timer = setTimeout(function () {
+          cleanup();
+          reject(new Error('JSONP 응답 시간 초과'));
+        }, 15000);
+
+        document.head.appendChild(script);
       });
-
-      var guMap = {};
-      busanFeatures.forEach(function(f) {
-        var sgg  = f.properties.sgg;
-        var name = f.properties.sggnm;
-        if (!guMap[sgg]) guMap[sgg] = { name: name, features: [] };
-        guMap[sgg].features.push(f);
-      });
-
-      // 구 하나당 레이어 하나. 예전엔 행정동마다 레이어를 만들어 부산에서만
-      // 200개 넘게 쌓였는데, 색상·클릭 판정이 전부 구 단위라 나눌 이유가 없다.
-      Object.keys(guMap).forEach(function(sgg) {
-        var gu     = guMap[sgg];
-        var guName = gu.name;
-        var unsold = unsoldData[guName] || 0;
-
-        var vectorSource = new ol.source.Vector({
-          features: (new ol.format.GeoJSON()).readFeatures(
-            { type: 'FeatureCollection', features: gu.features },
-            { featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' }
-          )
-        });
-
-        var vectorLayer = new ol.layer.Vector({
-          source: vectorSource,
-          style:  guStyle(getColor(unsold)),
-        });
-
-        vectorLayer.guName = guName;
-        vectorLayer.unsold = unsold;
-        vectorLayer.sgg    = sgg;
-
-        map.addLayer(vectorLayer);
-        layerList.push(vectorLayer);
-      });
-
-      console.log('[vworld] 구·군 레이어 ' + layerList.length + '개 추가');
-
-      map.on('click', function(evt) {
-        var hit = false;
-        map.forEachFeatureAtPixel(evt.pixel, function(feature, layer) {
-          if (!hit && layer && layer.guName) {
-            hit = true;
-            onGuClick(layer.guName);
-          }
-        });
-      });
-
-      addGuLabels(guMap);
     }
 
-    function guStyle(color) {
+    /* --- 속성 파싱 ------------------------------------------------------ */
+
+    // V-World 데이터셋 사이에 필드명이 통일돼 있지 않아(sig_kor_nm / emd_kor_nm /
+    // 축약형) 후보를 순서대로 훑는다.
+    var CODE_KEYS = ['emd_cd', 'sig_cd', 'adm_cd', 'adm_sect_c', 'code'];
+    var NAME_KEYS = ['emd_kor_nm', 'sig_kor_nm', 'emd_nm', 'sig_nm', 'adm_nm', 'name'];
+    var FULL_KEYS = ['full_nm', 'adm_nm', 'addr'];
+
+    function pick(props, keys) {
+      if (!props) return '';
+      for (var i = 0; i < keys.length; i++) {
+        var v = props[keys[i]];
+        if (v !== undefined && v !== null && String(v) !== '') return String(v);
+      }
+      return '';
+    }
+
+    // full_nm은 '부산광역시 중구 보수동'처럼 전체 경로로 온다.
+    // 구·군 토큰(…구 / …군)을 집어낸다.
+    function guFromFullName(fullNm) {
+      if (!fullNm) return '';
+      var parts = String(fullNm).trim().split(/\s+/);
+      for (var i = 0; i < parts.length; i++) {
+        if (/[구군]$/.test(parts[i])) return parts[i];
+      }
+      return '';
+    }
+
+    function lastToken(s) {
+      if (!s) return '';
+      var parts = String(s).trim().split(/\s+/);
+      return parts[parts.length - 1];
+    }
+
+    // 코드 앞 두 자리가 부산(26)이면 채택. 코드가 비면 주소 문자열로 판정한다.
+    function isBusan(code, fullNm) {
+      if (code) return code.slice(0, 2) === BUSAN_SIDO;
+      return String(fullNm || '').indexOf('부산') === 0;
+    }
+
+    function readBusanFeatures(fc) {
+      var all = new ol.format.GeoJSON().readFeatures(fc, {
+        dataProjection:    'EPSG:4326',
+        featureProjection: 'EPSG:3857',
+      });
+
+      var kept = [];
+      all.forEach(function (f) {
+        var props  = f.getProperties();
+        var code   = pick(props, CODE_KEYS);
+        var fullNm = pick(props, FULL_KEYS);
+        if (!isBusan(code, fullNm)) return;
+
+        var name = pick(props, NAME_KEYS) || lastToken(fullNm);
+        var gu   = guFromFullName(fullNm)
+                || (code ? guNameByCode[code.slice(0, 5)] : '')
+                || (/[구군]$/.test(name) ? name : '');
+
+        f.set('__code', code);
+        f.set('__gu',   gu);
+        // 구·군 피처는 이름 자체가 구 이름이라 동이 없다.
+        f.set('__dong', (name && name !== gu) ? name : '');
+        kept.push(f);
+      });
+
+      return { features: kept, rawCount: (fc.features || []).length };
+    }
+
+    /* --- 레이어 구성 ---------------------------------------------------- */
+
+    function buildGuLayer(features) {
+      features.forEach(function (f) {
+        var code = f.get('__code');
+        var gu   = f.get('__gu');
+        if (code && gu) guNameByCode[code.slice(0, 5)] = gu;
+      });
+
+      // 스타일을 함수로 두면 미분양 값이 바뀔 때 changed()만 부르면 되고,
+      // 레이어를 다시 만들거나 setStyle을 돌 필요가 없다.
+      guLayer = new ol.layer.Vector({
+        source: new ol.source.Vector({ features: features }),
+        style: function (feature) {
+          return guFillStyle(getColor(unsoldData[feature.get('__gu')] || 0));
+        },
+      });
+      olMap.addLayer(guLayer);
+      showLegend(true);
+      console.log('[vworld] 구·군 색상 레이어 추가 (' + features.length + '개)');
+    }
+
+    function buildDongLayer(features) {
+      // 구·군 레이어가 먼저 떴으면 코드 역참조로 빈 구 이름을 메운다.
+      features.forEach(function (f) {
+        if (!f.get('__gu')) {
+          var code = f.get('__code');
+          if (code) f.set('__gu', guNameByCode[code.slice(0, 5)] || '');
+        }
+      });
+
+      dongSource = new ol.source.Vector({ features: features });
+      dongLayer = new ol.layer.Vector({
+        source: dongSource,
+        style:  dongHitStyle(),
+      });
+      olMap.addLayer(dongLayer);
+      console.log('[vworld] 읍면동 클릭 레이어 추가 (' + features.length + '개)');
+    }
+
+    function guFillStyle(color) {
       return new ol.style.Style({
         fill:   new ol.style.Fill({ color: color + 'bb' }),
         stroke: new ol.style.Stroke({ color: '#ffffff', width: 1.5 }),
       });
     }
 
-    // 라벨은 부가 요소다. vw.ol3.Marker도 MapOptions처럼 생성자가 아닐 수 있어
-    // (그 경우 "is not a constructor") 여기서 터져도 폴리곤까지 잃지 않도록 가둔다.
-    function addGuLabels(guMap) {
-      if (typeof vw.ol3.Marker !== 'function' || typeof map.addMarker !== 'function') {
-        console.warn('vw.ol3.Marker/addMarker를 쓸 수 없어 구 라벨을 건너뜁니다.');
-        return;
-      }
-      try {
-        addGuLabelsUnsafe(guMap);
-      } catch(e) {
-        console.warn('구 라벨 생성 실패(폴리곤은 정상):', e);
-      }
+    function dongHitStyle() {
+      // 알파 0인 fill은 히트 판정 캔버스에도 안 찍혀 폴리곤 내부 클릭이 안 잡힌다.
+      // 눈에 안 보일 정도로만 남겨 둔다.
+      return new ol.style.Style({
+        fill:   new ol.style.Fill({ color: 'rgba(255,255,255,0.01)' }),
+        stroke: new ol.style.Stroke({ color: 'rgba(255,255,255,0.35)', width: 0.6 }),
+      });
     }
 
-    function addGuLabelsUnsafe(guMap) {
-      Object.keys(guMap).forEach(function(sgg) {
-        var gu     = guMap[sgg];
-        var coords = getCentroid(gu.features);
-        if (!coords) return;
+    /* ==================================================================
+       클릭
+       ================================================================== */
 
-        var marker = new vw.ol3.Marker({
-          x: coords[0], y: coords[1],
-          epsg: 'EPSG:4326',
-          label: gu.name,
-          labelStyle: {
-            font: 'bold 12px Malgun Gothic',
-            fill: new ol.style.Fill({ color: '#1a2234' }),
-          },
+    function bindClick() {
+      olMap.on('click', function (evt) {
+        if (resolveByVector(evt)) return;
+        resolveByWms(evt);
+      });
+    }
+
+    function resolveByVector(evt) {
+      var hit = null;
+
+      olMap.forEachFeatureAtPixel(evt.pixel, function (feature, layer) {
+        if (hit) return;
+        // 동 레이어를 우선한다. 구 레이어만 맞았으면 동은 빈 값으로 둔다.
+        if (layer === dongLayer || layer === guLayer) hit = feature;
+      });
+
+      // 히트 판정 캔버스가 반투명 fill을 놓치는 경우가 있어 지오메트리로 한 번 더 본다.
+      if (!hit && dongSource) {
+        var at = dongSource.getFeaturesAtCoordinate(evt.coordinate);
+        if (at && at.length) hit = at[0];
+      }
+
+      if (!hit) return false;
+      var gu = hit.get('__gu');
+      if (!gu) return false;
+
+      onDongClick(gu, hit.get('__dong') || '');
+      return true;
+    }
+
+    // 벡터 지오메트리가 없을 때의 폴백. WMS 타일에서는 피처를 못 잡으므로
+    // 서버에 좌표를 물어 속성만 받아 온다 (CORS가 막히면 여기서 끝난다).
+    function resolveByWms(evt) {
+      if (!wmsSource || typeof wmsSource.getFeatureInfoUrl !== 'function') return;
+
+      var view = olMap.getView();
+      var url = wmsSource.getFeatureInfoUrl(
+        evt.coordinate, view.getResolution(), view.getProjection(),
+        { INFO_FORMAT: 'application/json', QUERY_LAYERS: WMS_DONG, FEATURE_COUNT: 5 }
+      );
+      if (!url) return;
+
+      fetch(url)
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          var feats = (data && data.features) || [];
+          if (!feats.length) return;
+          var props  = feats[0].properties || {};
+          var code   = pick(props, CODE_KEYS);
+          var fullNm = pick(props, FULL_KEYS);
+          var name   = pick(props, NAME_KEYS) || lastToken(fullNm);
+          var gu     = guFromFullName(fullNm)
+                    || (code ? guNameByCode[code.slice(0, 5)] : '')
+                    || (/[구군]$/.test(name) ? name : '');
+          if (!gu) return;
+          onDongClick(gu, (name && name !== gu) ? name : '');
+        })
+        .catch(function (e) {
+          if (!wmsInfoWarned) {
+            wmsInfoWarned = true;
+            console.warn('GetFeatureInfo 실패 — 지도 클릭이 동작하지 않습니다:', e.message);
+          }
         });
-        map.addMarker(marker);
-      });
     }
 
-    function getCentroid(features) {
-      var sumX = 0, sumY = 0, cnt = 0;
-      features.forEach(function(f) {
-        var coords = f.geometry.coordinates;
-        if (f.geometry.type === 'Polygon') {
-          coords[0].forEach(function(c) { sumX += c[0]; sumY += c[1]; cnt++; });
-        } else if (f.geometry.type === 'MultiPolygon') {
-          coords.forEach(function(poly) {
-            poly[0].forEach(function(c) { sumX += c[0]; sumY += c[1]; cnt++; });
-          });
-        }
-      });
-      return cnt ? [sumX / cnt, sumY / cnt] : null;
-    }
-
-    function onGuClick(guName) {
+    function onDongClick(guName, dongName) {
       // Dash 브리지: 부모의 dcc.Interval(gu-click-interval)이 500ms마다
       // window.__lastGuClick을 폴링해 clicked-gu-store로 옮긴다.
       // 이 페이지는 부모와 같은 origin(/vworld-map.html)에서 서빙되므로
       // 부모 전역에 직접 쓸 수 있다. 다른 origin으로 옮기면 여기서 막힌다.
+      //
+      // 값은 JSON 문자열이다. 브리지가 "이전 값과 같으면 무시"로 중복 갱신을
+      // 걸러내는데, 객체를 그대로 넣으면 매번 다른 참조라 그 비교가 깨진다.
+      var payload = JSON.stringify({ gu: guName, dong: dongName });
       try {
-        window.parent.__lastGuClick = guName;
-      } catch(e) {
+        window.parent.__lastGuClick = payload;
+      } catch (e) {
         console.warn('부모 window에 쓸 수 없습니다 (cross-origin?):', e);
       }
 
       // 향후 message 방식 리스너를 위해 postMessage도 함께 보낸다.
-      window.parent.postMessage({ type: 'gu_click', name: guName }, '*');
+      window.parent.postMessage({ type: 'dong_click', gu: guName, dong: dongName }, '*');
     }
 
-    window.addEventListener('message', function(evt) {
+    /* ==================================================================
+       미분양 색상 주입
+       ================================================================== */
+
+    window.addEventListener('message', function (evt) {
       if (evt.data && evt.data.type === 'unsold_data') {
-        unsoldData = evt.data.data;
+        unsoldData = evt.data.data || {};
         refreshColors();
       }
     });
 
     function refreshColors() {
-      layerList.forEach(function(layer) {
-        var unsold = unsoldData[layer.guName] || 0;
-        layer.unsold = unsold;
-        layer.setStyle(guStyle(getColor(unsold)));
-      });
+      // 레이어가 아직 없으면 unsoldData만 갱신해 둔다.
+      // buildGuLayer의 스타일 함수가 나중에 이 값을 읽는다.
+      if (!guLayer) return;
+      guLayer.changed();
+      showLegend(true);
     }
 
     /* ------------------------------------------------------------------
@@ -306,10 +644,6 @@
     var POLL_INTERVAL_MS  = 300;
     var POLL_MAX_ATTEMPTS = 50;          // 50 × 300ms = 최대 15초
     var INIT_DELAY_MS     = 500;         // 로더 체인이 전역 등록을 끝낼 여유
-
-    function currentDomain() {
-      return window.location.protocol + '//' + window.location.host;
-    }
 
     // 생성자가 실제로 건드리는 심볼만 확인한다.
     // (ol은 여기서 검사하지 않는다 — 로더가 어떤 이름으로 노출하든
@@ -329,7 +663,7 @@
 
     function waitForVWorld(attempt) {
       attempt = attempt || 0;
-      setTimeout(function() {
+      setTimeout(function () {
         var missing = missingDeps();
         if (!missing.length) {
           initMap();
@@ -345,8 +679,8 @@
 
     // window load = 로더와 그 체인의 서브리소스까지 전부 끝난 시점.
     // 거기서 한 번 더 500ms 여유를 두고 폴링을 시작한다.
-    window.addEventListener('load', function() {
-      setTimeout(function() { waitForVWorld(0); }, INIT_DELAY_MS);
+    window.addEventListener('load', function () {
+      setTimeout(function () { waitForVWorld(0); }, INIT_DELAY_MS);
     });
   </script>
 </body>

@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 def run_dashboard(debug: bool = False) -> None:
     from dashboards.app import app
     log.info("대시보드 시작: http://0.0.0.0:8050")
-    app.run(debug=debug, use_reloader=False, host="0.0.0.0", port=8050)
+    app.run(debug=debug, use_reloader=False, host="0.0.0.0", port=8888)
 
 
 def run_scheduler() -> None:

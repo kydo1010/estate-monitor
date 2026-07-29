@@ -56,6 +56,7 @@ dashboards/app.py
 
 import json
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
@@ -94,13 +95,19 @@ DARK_COLORS = {
     "text":     "#e8eaf0",
     "muted":    "#7a8499",
     "chart_bg": "#161b27",
-    # 시공사 도넛 11조각(상위 10 + 기타)용 순서 고정 팔레트. 마지막은 항상 기타=회색.
-    # 색은 눈대중이 아니라 검증기(dataviz/scripts/validate_palette.js)를 돌려
-    # 고른 순서다 — 도넛은 조각이 원형으로 이어지므로 마지막↔첫 조각까지
-    # 인접쌍에 넣고 검사했고, 이 순서에서 다크 표면(#161b27) 기준
-    # 최악 인접쌍 CVD ΔE 12.8 / 정상시각 ΔE 19.8로 기준(8 / 15)을 넘는다.
-    "donut": ["#d95926", "#9085e9", "#199e70", "#86b6ef", "#e66767", "#3987e5",
-              "#c98500", "#184f95", "#d55181", "#008300", "#7a8499"],
+    # 시공사 도넛 16조각(상위 15 + 기타)용 순서 고정 팔레트. 마지막은 항상 기타=회색.
+    # 색은 눈대중이 아니라 검증기(dataviz/scripts/validate_palette.js)를 돌려 고른
+    # 순서다 — 도넛은 조각이 원형으로 이어지므로 마지막↔첫 조각까지 인접쌍에 넣고
+    # 검사했다. 다크 표면(#161b27) 기준 최악 인접쌍 CVD ΔE 10.3 / 정상시각 ΔE 16.8
+    # 로 기준(8 / 15)을 넘고, 명도대역·채도하한도 유채색 15슬롯 전부 통과한다.
+    #
+    # 16색은 문서화된 8색만으로는 만들 수 없어, 그 8색의 **색상(hue)은 그대로 두고
+    # 명도를 두 단계로 벌려** 16슬롯을 만들었다. 색맹 조건에서 색상이 뭉개져도
+    # 명도 차가 남으므로 이 방식이 새 색을 지어내는 것보다 분리가 잘 나온다.
+    # 조각 수를 더 늘릴 거라면 색으로는 감당이 안 된다 — 막대차트로 바꿀 것.
+    "donut": ["#137511", "#c3851f", "#631ee9", "#18815b", "#24b020", "#a03b0f",
+              "#8d7cf8", "#f94a53", "#b1172b", "#3f93f8", "#f93b8a", "#ac165a",
+              "#966514", "#25ac7b", "#105fb3", "#ef5d1e", "#7a8499"],
 }
 
 LIGHT_COLORS = {
@@ -118,15 +125,16 @@ LIGHT_COLORS = {
     "chart_bg": "#ffffff",
     # 다크 팔레트와 같은 색상 계열을 라이트 표면(#ffffff)에 맞춰 다시 고른 것.
     # 자동 반전이 아니라 같은 검증을 따로 통과한 순서다
-    # (최악 인접쌍 CVD ΔE 14.1 / 정상시각 ΔE 19.7).
-    "donut": ["#eb6834", "#4a3aa7", "#1baf7a", "#86b6ef", "#e34948", "#2a78d6",
-              "#eda100", "#184f95", "#e87ba4", "#008300", "#64748b"],
+    # (최악 인접쌍 CVD ΔE 12.7 / 정상시각 ΔE 24.3).
+    "donut": ["#2fce92", "#0f670d", "#fa8a82", "#971255", "#0c53a0", "#fa82b0",
+              "#511ad4", "#9d131d", "#7ab2fa", "#986915", "#2ed229", "#a5a4fa",
+              "#18815a", "#fa8d65", "#8d340b", "#e7a128", "#64748b"],
 }
 
 DEFAULT_THEME = "dark"
 
 # 시공사 도넛에 개별 조각으로 남길 상위 업체 수. 나머지는 "기타"로 합친다.
-DONUT_TOP_N = 10
+DONUT_TOP_N = 15
 # 범례에 표시할 시공사명 최대 길이(초과분은 …으로 줄이고 전체 이름은 호버로).
 DONUT_LABEL_MAX = 18
 
@@ -334,6 +342,59 @@ def load_permit_df():
     )
     return df
 
+# 지도 GeoJSON은 **행정동**(adm_nm)이고 Trade.dong은 **법정동**이라 이름이
+# 일대일로 맞지 않는다. 이름 그대로 비교하면 부산 전체 거래의 14%밖에 안 붙는다.
+#   행정동 보수동  ← 법정동 보수동1가·2가·3가   ('N가' 꼬리)
+#   행정동 영주1동·영주2동 ← 법정동 영주동        (행정동 쪽 숫자)
+#   행정동 일광읍  ← 법정동 '일광읍 삼성리'       (기장군 읍·면은 '읍 + 리')
+# 아래 두 규칙으로 정규화하면 97.7%가 붙고, 나머지(예: 동래구 낙민동 →
+# 행정동 복산동)는 이름 자체가 달라 문자열로는 맞출 수 없다. 그때는 호출부가
+# 구 평균으로 fallback 한다.
+_DONG_GA_RE   = re.compile(r"\d+가$")
+_DONG_NUM_RE  = re.compile(r"(\d+)(동|가)$")
+
+
+def normalize_dong(name: str) -> str:
+    """'보수동2가'→'보수동', '영주1동'→'영주동'. 비교 전용 키."""
+    if not name:
+        return ""
+    n = _DONG_GA_RE.sub("", str(name).strip())
+    return _DONG_NUM_RE.sub(r"\2", n)
+
+
+def dong_match_keys(beopjeong_dong: str) -> set:
+    """법정동 이름 하나가 매칭될 수 있는 행정동 키들."""
+    if not beopjeong_dong:
+        return set()
+    keys = {normalize_dong(beopjeong_dong)}
+    if " " in str(beopjeong_dong):          # '일광읍 삼성리' → '일광읍'
+        keys.add(normalize_dong(str(beopjeong_dong).split()[0]))
+    return keys
+
+
+def load_dong_trades(gu: str, dong: str, days: int = 90) -> pd.DataFrame:
+    """
+    클릭한 행정동에 해당하는 최근 실거래를 Trade에서 직접 조회한다.
+
+    구 단위로 좁혀 DB에서 가져온 뒤(수백 행) 동 매칭은 파이썬에서 한다 —
+    정규화 규칙을 SQL로 옮기면 읽기도 어렵고 DB별로 깨진다.
+    """
+    end, start = date.today(), date.today() - timedelta(days=days)
+    with get_session() as s:
+        rows = s.query(Trade.dong, Trade.complex_name, Trade.deal_amount,
+                       Trade.area_m2, Trade.deal_date).filter(
+            Trade.district == gu,
+            Trade.deal_date >= start, Trade.deal_date <= end,
+        ).all()
+
+    df = pd.DataFrame(rows, columns=["법정동", "단지명", "거래금액", "전용면적", "거래일"])
+    if df.empty or not dong:
+        return df.iloc[0:0]
+
+    target = normalize_dong(dong)
+    return df[df["법정동"].map(lambda d: target in dong_match_keys(d))].copy()
+
+
 def load_trend_df():
     with get_session() as s:
         rows = s.query(Trade).all()
@@ -410,8 +471,10 @@ def build_tab_map(colors):
         ]),
         dcc.Store(id="clicked-gu-store"),
         # 지도(iframe) → Dash 브리지.
-        # iframe의 onGuClick이 window.parent.__lastGuClick에 구 이름을 써 두면
-        # 이 Interval이 폴링해서 clicked-gu-store로 옮긴다 (아래 clientside_callback).
+        # iframe의 onDongClick이 window.parent.__lastGuClick에
+        # '{"gu":"중구","dong":"보수동"}' JSON 문자열을 써 두면 이 Interval이
+        # 폴링해서 clicked-gu-store로 옮긴다 (아래 clientside_callback).
+        # store 이름은 구 단위 시절 그대로다 — 바꾸면 콜백 id가 전부 따라 바뀐다.
         # 예전의 html.Script + CustomEvent 방식은 두 가지 이유로 동작하지 않았다:
         #   (1) React가 렌더한 <script>는 브라우저가 실행하지 않는다
         #   (2) 'dash-store-update'라는 이벤트를 Dash가 듣지 않는다
@@ -955,16 +1018,51 @@ clientside_callback(
 )
 
 
+def parse_map_click(data):
+    """
+    clicked-gu-store 값 → (구, 동).
+
+    지도는 이제 '{"gu":"중구","dong":"보수동"}' JSON 문자열을 보낸다.
+    구 이름만 오던 예전 형식도 그대로 받아 준다 — 브라우저에 남아 있던
+    옛 iframe이 캐시에서 뜨면 그 형식으로 오고, 그때 패널이 죽으면 안 된다.
+
+    다만 파싱에 실패한 값을 구 이름으로 흘려보내지는 않는다. 예전에 이 함수가
+    없던 시절, store에 들어온 JSON 문자열이 헤더 H3에 그대로 렌더돼
+    `{"gu":"수영구","dong":"광안4동"}`가 화면에 뜬 적이 있다. 알 수 없는 형식은
+    (None, None)으로 떨어뜨려 안내 문구를 띄우는 편이 낫다.
+    """
+    if not data:
+        return None, None
+    if isinstance(data, dict):
+        return _as_district(data.get("gu")), data.get("dong")
+    try:
+        parsed = json.loads(data)
+    except (TypeError, ValueError):
+        return _as_district(data), None    # 예전 형식: 구 이름 문자열
+    if isinstance(parsed, dict):
+        return _as_district(parsed.get("gu")), parsed.get("dong")
+    return _as_district(parsed), None
+
+
+def _as_district(value):
+    """구·군 이름으로 확인된 값만 통과시킨다 (config 매핑 기준)."""
+    if isinstance(value, str) and value.strip() in BUSAN_DISTRICT_NAMES:
+        return value.strip()
+    return None
+
+
 @app.callback(
     Output("map-side-panel", "children"),
     Input("clicked-gu-store", "data"),
     State("theme-store", "data"),
     prevent_initial_call=True,
 )
-def map_side_panel(gu_name, theme):
+def map_side_panel(click_data, theme):
     colors = get_colors(theme)
     CARD = get_card_style(colors)
     TABLE_STYLE = get_table_style(colors)
+
+    gu_name, dong_name = parse_map_click(click_data)
 
     if not gu_name:
         return html.P("← 지도에서 구·군을 클릭하세요",
@@ -973,14 +1071,32 @@ def map_side_panel(gu_name, theme):
 
     u_row   = unsold_df[unsold_df["지역구"] == gu_name]
     p_row   = price_df[price_df["지역구"] == gu_name]
+    # 인허가는 구 단위 유지 — building_permits에 동 정보가 없다.
     pm_rows = permit_df[permit_df["지역구"] == gu_name].sort_values(
         "인허가일", ascending=False).head(5).copy()
     pm_rows["인허가일"] = pm_rows["인허가일"].astype(str)
 
     unsold_count = int(u_row["미분양세대수"].values[0]) if not u_row.empty else "-"
     change_rate  = u_row["증감률"].values[0] if not u_row.empty else None
-    avg_price    = int(p_row["평균거래가"].values[0]) if not p_row.empty else None
+    gu_avg_price = int(p_row["평균거래가"].values[0]) if not p_row.empty else None
     spike        = (change_rate or 0) >= UNSOLD_SPIKE_THRESHOLD_PCT
+
+    # 실거래가만 동 단위로 내려간다. 동 거래가 하나도 없으면 구 평균으로 돌아가고,
+    # 그 사실을 반드시 화면에 적는다 — 안 적으면 구 평균이 동 시세로 읽힌다.
+    dong_trades = load_dong_trades(gu_name, dong_name) if dong_name else pd.DataFrame()
+    if not dong_trades.empty:
+        price_value = f"{int(dong_trades['거래금액'].mean()):,}만원"
+        price_sub   = f"{dong_name} 기준 · {len(dong_trades)}건"
+        price_note  = None
+    else:
+        price_value = f"{gu_avg_price:,}만원" if gu_avg_price else "-"
+        price_sub   = f"{gu_name} 전체 평균"
+        price_note  = (f"※ {dong_name} 실거래 없음 — 구 평균으로 대체"
+                       if dong_name else None)
+
+    def note(text):
+        return html.P(text, style={"color":colors["muted"],"fontSize":"14px",
+                                   "margin":"6px 0 0","lineHeight":"1.4"})
 
     def stat_row(label, value, color=None):
         return html.Div(
@@ -995,8 +1111,9 @@ def map_side_panel(gu_name, theme):
     return html.Div([
         html.Div(style={"display":"flex","alignItems":"center",
                         "justifyContent":"space-between","marginBottom":"20px"}, children=[
-            html.H3(gu_name, style={"margin":"0","fontSize":"14px",
-                                     "fontWeight":"700","color":colors["text"]}),
+            html.H3(" ".join(p for p in (gu_name, dong_name) if p),
+                    style={"margin":"0","fontSize":"14px",
+                           "fontWeight":"700","color":colors["text"]}),
             html.Span("⚠ 급증" if spike else "✓ 정상",
                 style={"color":colors["danger"] if spike else colors["ok"],"fontSize":"15px",
                        "fontWeight":"700",
@@ -1012,13 +1129,17 @@ def map_side_panel(gu_name, theme):
             stat_row("전월 대비",
                      f"{change_rate:+.1f}%" if change_rate is not None else "-",
                      colors["danger"] if spike else colors["ok"]),
+            # 미분양은 구 단위로만 집계돼 들어온다. 동을 눌러도 이 숫자는
+            # 구 전체 값이므로 그렇게 밝혀 둔다.
+            note("※ 구 전체 기준"),
         ]),
         html.P("실거래가", style={"color":colors["muted"],"fontSize":"15px",
                                   "letterSpacing":"0.1em","margin":"0 0 4px",
                                   "textTransform":"uppercase"}),
         html.Div(style={**CARD,"marginBottom":"14px","padding":"12px 16px"}, children=[
-            stat_row("최근 3개월 평균",
-                     f"{avg_price:,}만원" if avg_price else "-", colors["accent"]),
+            stat_row("최근 3개월 평균", price_value, colors["accent"]),
+            stat_row("집계 범위", price_sub),
+            *([note(price_note)] if price_note else []),
         ]),
         html.P("최근 인허가", style={"color":colors["muted"],"fontSize":"15px",
                                      "letterSpacing":"0.1em","margin":"0 0 8px",
