@@ -231,10 +231,7 @@ updated_at = date.today().strftime("%Y-%m-%d")
 
 def build_tab_map(colors):
     CARD = get_card_style(colors)
-    html_path = Path(__file__).parent / "assets" / "vworld_map.html"
-    html_content = html_path.read_text(encoding="utf-8")
-    html_content = html_content.replace("__VWORLD_API_KEY__", VWORLD_API_KEY or "")
-
+    
     return html.Div([
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
                  children=[
@@ -254,7 +251,7 @@ def build_tab_map(colors):
                        style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 10px"}),
                 html.Iframe(
                     id="vworld-iframe",
-                    srcDoc=html_content,
+                    src="/vworld-map.html",
                     style={"width":"100%","height":"560px","border":"none","borderRadius":"8px"},
                 ),
             ]),
@@ -265,16 +262,13 @@ def build_tab_map(colors):
             ]),
         ]),
         dcc.Store(id="clicked-gu-store"),
-        html.Script(f"""
-            window.addEventListener('message', function(evt) {{
-                if (evt.data && evt.data.type === 'gu_click') {{
-                    var event = new CustomEvent('dash-store-update', {{
-                        detail: {{ storeId: 'clicked-gu-store', value: evt.data.name }}
-                    }});
-                    document.dispatchEvent(event);
-                }}
-            }});
-        """),
+        # 지도(iframe) → Dash 브리지.
+        # iframe의 onGuClick이 window.parent.__lastGuClick에 구 이름을 써 두면
+        # 이 Interval이 폴링해서 clicked-gu-store로 옮긴다 (아래 clientside_callback).
+        # 예전의 html.Script + CustomEvent 방식은 두 가지 이유로 동작하지 않았다:
+        #   (1) React가 렌더한 <script>는 브라우저가 실행하지 않는다
+        #   (2) 'dash-store-update'라는 이벤트를 Dash가 듣지 않는다
+        dcc.Interval(id="gu-click-interval", interval=500, n_intervals=0),
     ])
 
 
@@ -585,6 +579,18 @@ def get_toggle_button_label(theme: str) -> str:
 # ---------------------------------------------------------------------------
 app = Dash(__name__, title="부산 분양·거래시장 통합 모니터",
            suppress_callback_exceptions=True)
+
+
+# vworld_map.html은 assets 정적 서빙(/assets/...)이 아니라 이 라우트로 내보낸다.
+# 파일 안의 __VWORLD_API_KEY__ 플레이스홀더를 여기서 치환하기 위함이다.
+# (iframe은 srcDoc이 아니라 src=로 이 URL을 가리켜야 한다. srcDoc이면 지도 쪽
+#  window.location.host가 비어 V-World domain 파라미터가 깨진다.)
+@app.server.route("/vworld-map.html")
+def serve_vworld_map():
+    html_path = Path(__file__).parent / "assets" / "vworld_map.html"
+    content = html_path.read_text(encoding="utf-8")
+    content = content.replace("__VWORLD_API_KEY__", VWORLD_API_KEY or "")
+    return content, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 app.layout = html.Div([
     dcc.Store(id="theme-store", data=DEFAULT_THEME),

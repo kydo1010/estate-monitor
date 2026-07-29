@@ -8,57 +8,50 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
     #map { width: 100%; height: 100%; }
-
-    /* 범례 */
     #legend {
-      position: absolute;
-      bottom: 24px;
-      left: 12px;
-      background: rgba(255,255,255,0.92);
-      border: 1px solid #dde3ed;
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
-      font-size: 12px;
-      color: #333;
-      z-index: 1000;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      position: absolute; bottom: 24px; left: 12px;
+      background: rgba(255,255,255,0.92); border: 1px solid #dde3ed;
+      border-radius: 8px; padding: 10px 14px;
+      font-family: 'Malgun Gothic', sans-serif; font-size: 12px; color: #333;
+      z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
-    #legend h4 { font-size: 11px; color: #666; margin-bottom: 6px; letter-spacing: 0.05em; }
+    #legend h4 { font-size: 11px; color: #666; margin-bottom: 6px; }
     .legend-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
     .legend-color { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
-
-    /* 로딩 */
     #loading {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      font-family: 'Malgun Gothic', sans-serif;
-      font-size: 14px; color: #666;
+      font-family: 'Malgun Gothic', sans-serif; font-size: 14px; color: #666;
       z-index: 2000;
     }
   </style>
+  <!--
+    V-World 로더.
 
-  <!-- 1. jQuery -->
-  <script src="https://map.vworld.kr/jquery/ol3/jquery-1.11.3.min.js"></script>
-  <script src="https://map.vworld.kr/jquery/ol3/jquery-ui.min.js"></script>
+    domain 파라미터가 실제 Referer와 일치해야 인증이 통과하므로 URL을 통째로
+    고정할 수 없다. 그렇다고 appendChild로 동적 주입하면, 로더가 의존 스크립트를
+    document.write로 뱉는데 "동적 삽입된 스크립트에서의 document.write"는
+    브라우저가 무시해 버린다.
 
-  <!-- 2. Apps Script: vw 객체 정의 (document.write 제거됨) -->
-  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec?type=js"></script>
-
-  <!-- 3. OpenLayers — Apps Script 경유 (중복 방지) -->
-  <script src="https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec?type=ol"></script>
-
-  <!-- 4. 나머지 -->
-  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.raphael.js"></script>
-  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.raphael.max.js"></script>
-  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.bar.max.js"></script>
-  <script src="https://map.vworld.kr/js/map/chart/ol3/v2.g.pie.max.js"></script>
-  <script src="https://map.vworld.kr/js/vw.ol3.2DMapClassInit_v30.min.js"></script>
+    그래서 파싱 시점에 실행되는 인라인 스크립트에서 document.write로 태그를
+    써낸다. 파서가 정상 경로로 처리하므로 정적 <script>와 동일하게 동기·순서
+    보장 로드되고, 로더가 부르는 중첩 document.write도 네이티브로 동작한다.
+    별도의 shim이 필요 없다.
+  -->
+  <script>
+    (function () {
+      var domain = window.location.protocol + '//' + window.location.host;
+      var url = 'https://map.vworld.kr/js/vworldMapInit.js.do'
+              + '?version=2.0'
+              + '&apiKey=' + '__VWORLD_API_KEY__'
+              + '&domain=' + domain;
+      document.write('<scr' + 'ipt src="' + url + '"><\/scr' + 'ipt>');
+    })();
+  </script>
 </head>
 <body>
   <div id="loading">지도 로딩 중...</div>
   <div id="map"></div>
-
   <div id="legend">
     <h4>미분양 현황</h4>
     <div class="legend-item"><div class="legend-color" style="background:#1a6b3c"></div> 미분양 없음</div>
@@ -69,10 +62,17 @@
   </div>
 
   <script>
-    // 부산 16개 구·군 미분양 데이터 (Dash에서 postMessage로 주입)
     var unsoldData = {};
+    var map;        // vw.ol3.Map 인스턴스. ol.Map을 상속하므로 그대로 ol.Map처럼 쓴다.
+    var layerList = [];
 
-    // 구·군별 색상 계산
+    function setLoading(msg) {
+      var el = document.getElementById('loading');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
     function getColor(unsoldCount) {
       if (!unsoldCount || unsoldCount === 0) return '#1a6b3c';
       if (unsoldCount < 50)  return '#4caf82';
@@ -81,44 +81,86 @@
       return '#e05c5c';
     }
 
-    // 지도 초기화
-    var map;
-    var layerList = [];
+    var BUSAN_LON  = 129.0756;
+    var BUSAN_LAT  = 35.1796;
+    var BUSAN_ZOOM = 11;
 
     function initMap() {
-      map = new vw.ol3.Map({
-        mapId: 'map',
-        initX: 129.0756,   // 부산 중심 경도
-        initY: 35.1796,    // 부산 중심 위도
-        initZoom: 11,
-        basemapType: vw.ol3.BasemapType.GRAPHIC,
-      });
+      try {
+        // V-World 2D API의 시그니처는 new vw.ol3.Map(targetDivId, mapOptions).
+        // 인자가 두 개다 — 객체 하나만 넘기면 그 객체가 targetDivId 자리로 가고
+        // mapOptions가 undefined가 되어 "Cannot set properties of undefined
+        // (setting 'renderer')"로 죽는다.
+        //
+        // 초기 위치는 initPosition(CameraPosition)으로 준다. 좌표는 EPSG:3857.
+        //   - initX/initY/initZoom은 이 API에 없다. 그렇게 넘기면 initPosition이
+        //     빈 채로 남아 내부에서 initPosition.zoom을 읽다가
+        //     "Cannot read properties of undefined (reading 'zoom')"이 난다.
+        //   - vw.ol3.MapOptions는 이 빌드에서 생성자가 아니므로 plain object로 넘긴다
+        //     ("is not a constructor"). CameraPosition도 같은 이유로 리터럴을 쓴다.
+        var mapOptions = {
+          basemapType:        vw.ol3.BasemapType.GRAPHIC,
+          controlsDensity:    vw.ol3.DensityType.EMPTY,
+          interactionDensity: vw.ol3.DensityType.BASIC,
+          controlsAutoArrange: true,
+          initPosition: {
+            center: ol.proj.transform([BUSAN_LON, BUSAN_LAT], 'EPSG:4326', 'EPSG:3857'),
+            zoom:   BUSAN_ZOOM,
+          },
+        };
 
-      document.getElementById('loading').style.display = 'none';
-      loadBusanGeoJSON();
+        map = new vw.ol3.Map('map', mapOptions);
+
+        // TODO(임시 진단): vw.ol3.Map의 실제 구조 확인용. 확인 끝나면 지울 것.
+        console.log('[vworld] typeof map.addLayer =', typeof map.addLayer,
+                    '| typeof map.map =', typeof map.map,
+                    '| instanceof ol.Map =',
+                    (typeof ol !== 'undefined' && ol.Map) ? (map instanceof ol.Map) : 'n/a');
+
+        // vw.ol3.Map은 ol.Map을 상속하므로 map 자체가 ol.Map이다.
+        // 혹시 아니라면 여기서 바로 잡아 낸다 (뒤에서 addLayer가 조용히 실패하는 것보다 낫다).
+        if (typeof map.addLayer !== 'function') {
+          throw new Error('map.addLayer가 없습니다 (typeof map.map = ' + typeof map.map + ')');
+        }
+
+        document.getElementById('loading').style.display = 'none';
+        loadBusanGeoJSON();
+      } catch(e) {
+        var missing = missingDeps();
+        setLoading('지도 초기화 실패: ' + e.message
+                   + (missing.length ? ' (누락: ' + missing.join(', ') + ')' : ''));
+        console.error('initMap error:', e, '| missing deps:', missing);
+      }
     }
 
-    // 부산 GeoJSON 로드 — Apps Script WFS 프록시 경유
     function loadBusanGeoJSON() {
-      fetch('https://script.google.com/a/macros/kyungdong.com/s/AKfycbxvSIh-AIa6kcnQFWBg9S9C_TUIyXhs_yGpy6N2IPd2Bq5d-lEPYlp_z6FnZOKM8RGd/exec')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          buildGuLayer(data);
+      fetch('https://raw.githubusercontent.com/vuski/admdongkor/master/ver20230701/HangJeongDong_ver20230701.geojson')
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
         })
         .catch(function(e) {
           console.error('GeoJSON 로드 실패:', e);
-          document.getElementById('loading').textContent = 'GeoJSON 로드 실패: ' + e.message;
-          document.getElementById('loading').style.display = 'block';
-        });
+          setLoading('GeoJSON 로드 실패: ' + e.message);
+          throw e;                       // 아래 렌더링 단계로는 넘기지 않는다
+        })
+        // 렌더링 실패를 "로드 실패"로 뭉뚱그리지 않도록 catch를 분리한다.
+        // (한 체인으로 두면 buildGuLayer가 던진 에러까지 GeoJSON 탓으로 표시된다)
+        .then(function(data) {
+          try {
+            buildGuLayer(data);
+          } catch(e) {
+            console.error('구·군 레이어 생성 실패:', e);
+            setLoading('구·군 레이어 생성 실패: ' + e.message);
+          }
+        }, function() { /* 로드 실패는 위에서 이미 보고함 */ });
     }
 
-    // 구·군 레이어 생성
     function buildGuLayer(data) {
       var busanFeatures = data.features.filter(function(f) {
         return f.properties.sido === '26';
       });
 
-      // 구별 집계
       var guMap = {};
       busanFeatures.forEach(function(f) {
         var sgg  = f.properties.sgg;
@@ -127,40 +169,38 @@
         guMap[sgg].features.push(f);
       });
 
+      // 구 하나당 레이어 하나. 예전엔 행정동마다 레이어를 만들어 부산에서만
+      // 200개 넘게 쌓였는데, 색상·클릭 판정이 전부 구 단위라 나눌 이유가 없다.
       Object.keys(guMap).forEach(function(sgg) {
-        var gu      = guMap[sgg];
-        var guName  = gu.name;
-        var unsold  = unsoldData[guName] || 0;
-        var color   = getColor(unsold);
+        var gu     = guMap[sgg];
+        var guName = gu.name;
+        var unsold = unsoldData[guName] || 0;
 
-        gu.features.forEach(function(f) {
-          var vectorSource = new ol4.source.Vector({
-            features: (new ol4.format.GeoJSON()).readFeatures(f, {
-              featureProjection: 'EPSG:3857',
-              dataProjection:    'EPSG:4326',
-            })
-          });
-
-          var vectorLayer = new ol4.layer.Vector({
-            source: vectorSource,
-            style: new ol4.style.Style({
-              fill:   new ol4.style.Fill({ color: color + 'bb' }),
-              stroke: new ol4.style.Stroke({ color: '#ffffff', width: 1.5 }),
-            }),
-          });
-
-          vectorLayer.guName = guName;
-          vectorLayer.unsold = unsold;
-          vectorLayer.sgg    = sgg;
-          map.map.addLayer(vectorLayer);
-          layerList.push(vectorLayer);
+        var vectorSource = new ol.source.Vector({
+          features: (new ol.format.GeoJSON()).readFeatures(
+            { type: 'FeatureCollection', features: gu.features },
+            { featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' }
+          )
         });
+
+        var vectorLayer = new ol.layer.Vector({
+          source: vectorSource,
+          style:  guStyle(getColor(unsold)),
+        });
+
+        vectorLayer.guName = guName;
+        vectorLayer.unsold = unsold;
+        vectorLayer.sgg    = sgg;
+
+        map.addLayer(vectorLayer);
+        layerList.push(vectorLayer);
       });
 
-      // 클릭 이벤트
-      map.map.on('click', function(evt) {
+      console.log('[vworld] 구·군 레이어 ' + layerList.length + '개 추가');
+
+      map.on('click', function(evt) {
         var hit = false;
-        map.map.forEachFeatureAtPixel(evt.pixel, function(feature, layer) {
+        map.forEachFeatureAtPixel(evt.pixel, function(feature, layer) {
           if (!hit && layer && layer.guName) {
             hit = true;
             onGuClick(layer.guName);
@@ -171,8 +211,28 @@
       addGuLabels(guMap);
     }
 
-    // 구명 레이블 추가
+    function guStyle(color) {
+      return new ol.style.Style({
+        fill:   new ol.style.Fill({ color: color + 'bb' }),
+        stroke: new ol.style.Stroke({ color: '#ffffff', width: 1.5 }),
+      });
+    }
+
+    // 라벨은 부가 요소다. vw.ol3.Marker도 MapOptions처럼 생성자가 아닐 수 있어
+    // (그 경우 "is not a constructor") 여기서 터져도 폴리곤까지 잃지 않도록 가둔다.
     function addGuLabels(guMap) {
+      if (typeof vw.ol3.Marker !== 'function' || typeof map.addMarker !== 'function') {
+        console.warn('vw.ol3.Marker/addMarker를 쓸 수 없어 구 라벨을 건너뜁니다.');
+        return;
+      }
+      try {
+        addGuLabelsUnsafe(guMap);
+      } catch(e) {
+        console.warn('구 라벨 생성 실패(폴리곤은 정상):', e);
+      }
+    }
+
+    function addGuLabelsUnsafe(guMap) {
       Object.keys(guMap).forEach(function(sgg) {
         var gu     = guMap[sgg];
         var coords = getCentroid(gu.features);
@@ -191,7 +251,6 @@
       });
     }
 
-    // 폴리곤 무게중심 계산
     function getCentroid(features) {
       var sumX = 0, sumY = 0, cnt = 0;
       features.forEach(function(f) {
@@ -207,12 +266,10 @@
       return cnt ? [sumX / cnt, sumY / cnt] : null;
     }
 
-    // 구·군 클릭 → Dash에 메시지 전달
     function onGuClick(guName) {
       window.parent.postMessage({ type: 'gu_click', name: guName }, '*');
     }
 
-    // Dash에서 미분양 데이터 수신
     window.addEventListener('message', function(evt) {
       if (evt.data && evt.data.type === 'unsold_data') {
         unsoldData = evt.data.data;
@@ -220,26 +277,66 @@
       }
     });
 
-    // 색상 갱신
     function refreshColors() {
       layerList.forEach(function(layer) {
         var unsold = unsoldData[layer.guName] || 0;
-        var color  = getColor(unsold);
-        layer.setStyle(new ol4.style.Style({
-          fill:   new ol4.style.Fill({ color: color + 'bb' }),
-          stroke: new ol4.style.Stroke({ color: '#ffffff', width: 1.5 }),
-        }));
+        layer.unsold = unsold;
+        layer.setStyle(guStyle(getColor(unsold)));
       });
     }
 
-    // V-World 초기화 콜백
-    window.onload = function() {
-      if (typeof vw !== 'undefined') {
-        initMap();
+    /* ------------------------------------------------------------------
+       기동
+
+       로더 자체는 <head>의 인라인 document.write가 파싱 시점에 심어 놓았다.
+       그쪽은 파서가 동기·순서 보장으로 처리하므로 여기서는 로드 완료만 기다린다.
+       ------------------------------------------------------------------ */
+
+    var POLL_INTERVAL_MS  = 300;
+    var POLL_MAX_ATTEMPTS = 50;          // 50 × 300ms = 최대 15초
+    var INIT_DELAY_MS     = 500;         // 로더 체인이 전역 등록을 끝낼 여유
+
+    function currentDomain() {
+      return window.location.protocol + '//' + window.location.host;
+    }
+
+    // 생성자가 실제로 건드리는 심볼만 확인한다.
+    // (ol은 여기서 검사하지 않는다 — 로더가 어떤 이름으로 노출하든
+    //  vw.ol3.Map이 준비됐다면 그 내부 의존성도 함께 올라와 있다.)
+    function missingDeps() {
+      var missing = [];
+      if (typeof vw === 'undefined' || !vw.ol3) {
+        missing.push('vw.ol3');
       } else {
-        document.getElementById('loading').textContent = 'V-World API 로드 실패 — API 키 및 도메인을 확인하세요.';
+        if (!vw.ol3.Map) missing.push('vw.ol3.Map');
+        if (!vw.ol3.BasemapType || typeof vw.ol3.BasemapType.GRAPHIC === 'undefined') {
+          missing.push('vw.ol3.BasemapType');
+        }
       }
-    };
+      return missing;
+    }
+
+    function waitForVWorld(attempt) {
+      attempt = attempt || 0;
+      setTimeout(function() {
+        var missing = missingDeps();
+        if (!missing.length) {
+          initMap();
+        } else if (attempt < POLL_MAX_ATTEMPTS) {
+          waitForVWorld(attempt + 1);
+        } else {
+          console.error('V-World 의존성 대기 시간 초과. 누락:', missing);
+          setLoading('V-World API 로드 실패 — 누락: ' + missing.join(', ')
+                     + ' (도메인 ' + currentDomain() + ')');
+        }
+      }, POLL_INTERVAL_MS);
+    }
+
+    // window load = 로더와 그 체인의 서브리소스까지 전부 끝난 시점.
+    // 거기서 한 번 더 500ms 여유를 두고 폴링을 시작한다.
+    window.addEventListener('load', function() {
+      setTimeout(function() { waitForVWorld(0); }, INIT_DELAY_MS);
+    });
   </script>
 </body>
 </html>
