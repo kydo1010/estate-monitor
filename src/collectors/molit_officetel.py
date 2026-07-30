@@ -8,7 +8,7 @@ import logging
 from datetime import date
 
 from src.collectors.base import MolitBaseCollector
-from src.config import MOLIT_OFFICETEL_API_KEY, MOLIT_ENDPOINTS, BUSAN_CODE_TO_NAME
+from src.config import MOLIT_OFFICETEL_API_KEY, MOLIT_ENDPOINTS, ALL_CODE_TO_NAME
 from src.db import Trade, get_session
 
 log = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class OfficetelTradeCollector(MolitBaseCollector):
         # sggNm 직접 사용 (예: "해운대구"), 없으면 코드로 변환
         sgg_nm   = self._text(el, "sggNm").strip()
         sgg_cd   = self._text(el, "sggCd")
-        district = sgg_nm or BUSAN_CODE_TO_NAME.get(sgg_cd, "")
+        district = sgg_nm or ALL_CODE_TO_NAME.get(sgg_cd, "")
 
         return {
             "district":      district,

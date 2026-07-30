@@ -8,7 +8,7 @@ import logging
 from datetime import date
 
 from src.collectors.base import MolitBaseCollector
-from src.config import MOLIT_APT_RIGHTS_API_KEY, MOLIT_ENDPOINTS, BUSAN_CODE_TO_NAME
+from src.config import MOLIT_APT_RIGHTS_API_KEY, MOLIT_ENDPOINTS, ALL_CODE_TO_NAME
 from src.db import Trade
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class AptRightsTradeCollector(MolitBaseCollector):
             deal_date = None
 
         sgg_cd   = self._text(el, "sggCd")
-        district = BUSAN_CODE_TO_NAME.get(sgg_cd, self._text(el, "estateAgentSggNm"))
+        district = ALL_CODE_TO_NAME.get(sgg_cd, self._text(el, "estateAgentSggNm"))
 
         return {
             "district":      district,

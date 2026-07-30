@@ -12,7 +12,7 @@ import logging
 from datetime import date
 
 from src.collectors.base import MolitBaseCollector
-from src.config import MOLIT_APARTMENT_API_KEY, MOLIT_ENDPOINTS, BUSAN_CODE_TO_NAME
+from src.config import MOLIT_APARTMENT_API_KEY, MOLIT_ENDPOINTS, ALL_CODE_TO_NAME
 from src.db import Trade
 
 log = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class ApartmentTradeCollector(MolitBaseCollector):
 
         # sggCd(5자리 코드)로 구명 변환, 없으면 estateAgentSggNm에서 추출
         sgg_cd   = self._text(el, "sggCd")
-        district = BUSAN_CODE_TO_NAME.get(sgg_cd, self._text(el, "estateAgentSggNm"))
+        district = ALL_CODE_TO_NAME.get(sgg_cd, self._text(el, "estateAgentSggNm"))
 
         return {
             "district":      district,

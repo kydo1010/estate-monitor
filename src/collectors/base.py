@@ -89,10 +89,10 @@ class MolitBaseCollector:
 
     def run(self, months: list[str] | None = None) -> None:
         """
-        부산 16개 구·군 × 지정 월 전체 수집 → DB 저장.
+        부산·울산·경남 전체 시·군·구 × 지정 월 전체 수집 → DB 저장.
         months: ['202606', '202605', ...] 형태. None이면 당월만.
         """
-        from src.config import BUSAN_DISTRICT_CODES
+        from src.config import ALL_DISTRICT_CODES
         from src.db import get_session, init_db
 
         init_db()
@@ -102,7 +102,7 @@ class MolitBaseCollector:
             months = [today.strftime("%Y%m")]
 
         total_saved = 0
-        for lawd_cd, district in BUSAN_DISTRICT_CODES.items():
+        for lawd_cd, district in ALL_DISTRICT_CODES.items():
             for ym in months:
                 records = self.fetch_one_month(lawd_cd, ym)
                 if records:
