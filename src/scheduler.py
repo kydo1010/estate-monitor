@@ -49,8 +49,10 @@ def collect_trades() -> None:
 
 def collect_unsold() -> None:
     log.info("미분양 현황 수집 시작")
-    from src.collectors.busan_unsold import run
-    run()
+    from src.collectors.busan_unsold import run as busan_run
+    busan_run()
+    from src.collectors.gyeongnam_unsold import run as gyeongnam_run
+    gyeongnam_run()
     log.info("미분양 현황 수집 완료")
 
 

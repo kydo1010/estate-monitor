@@ -58,7 +58,10 @@
       "PowerShell(python -m py_compile dashboards\\\\app.py)",
       "PowerShell(if \\($?\\) { \"OK\" })",
       "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/app.py)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "PowerShell(python -m py_compile src\\\\collectors\\\\gyeongnam_unsold.py src\\\\config.py src\\\\scheduler.py)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat src/config.py src/scheduler.py)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor status --porcelain)"
     ]
   }
 }

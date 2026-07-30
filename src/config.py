@@ -27,6 +27,7 @@ BUILDING_PERMIT_API_KEY  = os.getenv("BUILDING_PERMIT_API_KEY")
 
 # 미분양
 BUSAN_UNSOLD_API_KEY     = os.getenv("BUSAN_UNSOLD_API_KEY")      # 부산광역시 공동주택 미분양
+GYEONGNAM_UNSOLD_API_KEY = os.getenv("GYEONGNAM_UNSOLD_API_KEY")  # 경상남도 미분양 현황
 
 # 청약홈
 CHEONGYAK_API_KEY        = os.getenv("CHEONGYAK_API_KEY")         # 청약홈 분양정보
@@ -48,6 +49,7 @@ def validate_api_keys(keys: list[str] | None = None) -> None:
         "BUILDING_PERMIT_API_KEY":  BUILDING_PERMIT_API_KEY,
         "BUSAN_UNSOLD_API_KEY":     BUSAN_UNSOLD_API_KEY,
         "CHEONGYAK_API_KEY":        CHEONGYAK_API_KEY,
+        "GYEONGNAM_UNSOLD_API_KEY": GYEONGNAM_UNSOLD_API_KEY,
     }
     target = {k: all_keys[k] for k in keys} if keys else {
         k: v for k, v in all_keys.items()
@@ -142,6 +144,47 @@ BUSAN_DONG_CODES = {
               "61000":"덕포2동","62000":"괘법동","64500":"감전동","65000":"주례1동",
               "66000":"주례2동","66100":"주례3동","67000":"학장동","68000":"엄궁동"},
     "26710": {"25000":"기장읍","25300":"장안읍","25600":"정관읍","25900":"일광읍","33000":"철마면"},
+}
+
+# ---------------------------------------------------------------------------
+# 울산 5개 구·군 (법정동 코드 앞 5자리)
+# ---------------------------------------------------------------------------
+ULSAN_DISTRICT_CODES = {
+    "31110": "중구",
+    "31140": "남구",
+    "31170": "동구",
+    "31200": "북구",
+    "31710": "울주군",
+}
+
+# ---------------------------------------------------------------------------
+# 경상남도 18개 시·군 (법정동 코드 앞 5자리)
+# ---------------------------------------------------------------------------
+GYEONGNAM_DISTRICT_CODES = {
+    "48121": "창원시",
+    "48170": "진주시",
+    "48220": "통영시",
+    "48240": "사천시",
+    "48250": "김해시",
+    "48270": "밀양시",
+    "48310": "거제시",
+    "48330": "양산시",
+    "48720": "의령군",
+    "48730": "함안군",
+    "48740": "창녕군",
+    "48820": "고성군",
+    "48840": "남해군",
+    "48850": "하동군",
+    "48860": "산청군",
+    "48870": "함양군",
+    "48880": "거창군",
+    "48890": "합천군",
+}
+
+ALL_DISTRICT_CODES = {
+    **BUSAN_DISTRICT_CODES,
+    **ULSAN_DISTRICT_CODES,
+    **GYEONGNAM_DISTRICT_CODES,
 }
 
 # ---------------------------------------------------------------------------
