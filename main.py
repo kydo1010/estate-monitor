@@ -1,3 +1,4 @@
+
 """
 main.py
 부산 분양·거래시장 통합 모니터 — 전체 실행 진입점
@@ -36,8 +37,11 @@ log = logging.getLogger(__name__)
 
 def run_dashboard(debug: bool = False) -> None:
     from dashboards.app import app
-    log.info("대시보드 시작: http://0.0.0.0:8050")
-    app.run(debug=debug, use_reloader=False, host="0.0.0.0", port=8888)
+    # V-World 인증키가 domain=http://localhost:9090으로만 등록되어
+    # 있고, vworld_map.html이 domain 파라미터를 window.location.host에서 만들기 때문에
+    # 포트가 바뀌면 지도 인증이 INCORRECT_KEY로 깨진다.
+    log.info("대시보드 시작: http://0.0.0.0:9090")
+    app.run(debug=debug, use_reloader=False, host="0.0.0.0", port=9090)
 
 
 def run_scheduler() -> None:

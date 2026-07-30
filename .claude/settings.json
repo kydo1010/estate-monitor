@@ -49,7 +49,8 @@
       "Bash(curl -s http://127.0.0.1:1111/_dash-dependencies -o deps_tmp.json)",
       "Bash(rm resp_tmp.json)",
       "Bash(rm -f deps_tmp.json)",
-      "Bash(rm -f resp_tmp.json)"
+      "Bash(rm -f resp_tmp.json)",
+      "Bash(python -c \"import dashboards.app\")"
     ]
   }
 }

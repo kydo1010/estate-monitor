@@ -19,7 +19,7 @@ SQLite에 적재하고, Plotly Dash로 시각화합니다. 핵심 분석 목표�
 source venv/bin/activate        # Linux.  Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-python main.py                # 대시보드 + 스케줄러 동시 실행 (운영, 0.0.0.0:8050)
+python main.py                # 대시보드 + 스케줄러 동시 실행 (운영, 0.0.0.0:9090)
 python main.py --dashboard    # 대시보드만 (개발)
 python main.py --scheduler    # 스케줄러만 (매주 월요일 07:00 자동 갱신)
 python main.py --update       # 데이터 1회 즉시 갱신 후 종료
@@ -74,7 +74,7 @@ python -m src.scheduler
   개별 수집기 실패는 다른 수집기를 막지 않고 로그만 남긴다(`data/scheduler.log`).
 - **`main.py`** — 4가지 실행 모드 분기. 기본 모드는 스케줄러를 데몬 스레드로 백그라운드 실행하면서
   대시보드를 메인 스레드에서 블로킹 실행한다. 전체 로그는 `data/app.log`.
-- **`dashboards/app.py`** — 단일 파일 Dash 앱(~840줄). 4개 탭: 지도 / 미분양 알림 / 거래가 분석 /
+- **`dashboards/app.py`** — 단일 파일 Dash 앱(~1250줄). 4개 탭: 지도 / 미분양 알림 / 거래가 분석 /
   착공·허가. 다크·라이트 테마는 `DARK_COLORS`/`LIGHT_COLORS` 딕셔너리 + `get_*_style()` 헬퍼로
   런타임 생성하며, CSS 파일이 아니라 인라인 style dict로 전부 처리된다.
 - **`dashboards/assets/vworld_map.html`** — V-World OpenLayers 지도. Dash가 이 파일을 읽어
@@ -93,15 +93,33 @@ python -m src.scheduler
   이 id를 **절대 생성하지 않는다** (재생성되면 `n_clicks`가 리셋돼 토글이 죽음).
   (2) 셸(`page-content`)은 `theme-store` 변경에만, 탭 본문(`tab-content`)은 `active-tab-store`
   변경에만 갱신한다 — 한 콜백이 둘 다 담당하면 탭 전환이 테마를 흔든다.
-- **지도 ↔ Dash 양방향 브리지는 현재 미완성이다.** iframe은 `postMessage({type:'gu_click'})`를
-  보내지만 Dash 쪽에서 `clicked-gu-store`에 값을 **쓰는 콜백이 없다** (`build_tab_map()`의
-  `html.Script`는 존재하지 않는 `dash-store-update` 이벤트를 쓰고, `clientside_callback`은
-  import만 되어 있고 미사용). 반대로 미분양 색상용 `unsold_data` 메시지도 Dash가 iframe으로
-  보내지 않아 지도는 항상 전 구역 `#1a6b3c`(미분양 없음)로 칠해진다. 사이드패널
-  `map_side_panel` 콜백 자체는 정상이므로, 고치려면 `clientside_callback`으로 window message를
-  받아 store에 쓰는 다리만 놓으면 된다.
-- V-World는 API 키에 등록된 도메인에서만 동작한다. 현재 `vworld_map.html`은
-  `domain=https://kyungdong.cloud`로 하드코딩되어 있어 다른 호스트에서는 지도가 안 뜬다.
+- **지도 ↔ Dash 양방향 브리지는 폴링 방식으로 구현되어 있다** (이전에는 미완성이었으나 수정됨).
+  iframe → Dash: `onDongClick`이 `window.parent.__lastGuClick`에 `{"gu":...,"dong":...}` JSON
+  문자열을 써 두면, `gu-click-interval`(500ms) + `clientside_callback`이 값이 바뀐 경우에만
+  읽어 `clicked-gu-store`에 쓴다(`dashboards/app.py` 약 968행). 값 파싱은 `parse_map_click()` —
+  구 이름만 오던 옛 형식도 허용하되, 미확인 값은 절대 구 이름으로 흘려보내지 않는다
+  (`_as_district()`가 `BUSAN_DISTRICT_NAMES`로 검증). Dash → iframe: `unsold-inject-interval`
+  (1초 간격, 최대 20회)이 `unsold-data-store`를 `postMessage({type:'unsold_data'})`로 반복
+  전송하고, iframe에 `layerList`가 생긴 게 확인되면 스스로 `disabled=True`로 멈춘다
+  (GeoJSON 레이어 생성에 수 초 걸려 초기 메시지를 놓칠 수 있어 재전송하는 구조).
+  store 이름(`clicked-gu-store`)은 구 단위이던 시절 이름 그대로이며, 바꾸면 관련 콜백 id가
+  모두 따라 바뀐다.
+- **V-World 인증은 `domain` 파라미터 + 브라우저 Referer 오리진 + 키 등록 도메인, 이 셋이 모두
+  정확히 일치해야 통과한다.** `vworld_map.html`은 `domain`을 `window.location.protocol + '//' +
+  window.location.host`로 만든다(`host` — **포트 포함**, `hostname`으로 바꾸지 말 것).
+  브라우저는 비표준 포트에서 Referer에 포트를 붙이므로 `domain`도 포트를 포함해야 하고,
+  **V-World 사이트의 등록 도메인에도 포트가 들어가 있어야 한다**(`http://localhost:9090`).
+  실측으로 확인된 동작: Referer가 없으면(=서버 사이드 호출) 통과, Referer가
+  `http://localhost/`면 통과, `http://localhost:9090/`이면 등록값에 포트가 없는 한 거부.
+  즉 **접속 호스트명·포트를 바꾸면 V-World 등록 도메인도 같이 바꿔야 한다.** 서버는 `0.0.0.0`에
+  바인딩되지만 공인IP로 접속하면 그 오리진이 등록돼 있지 않아 지도만 조용히 빈다 — SSH 터널로
+  `localhost:9090`을 유지하거나 실도메인을 추가 등록할 것.
+- V-World 에러 코드 두 개를 구분할 것: `INCORRECT_KEY`("인증키 정보가 올바르지 않습니다")는
+  **키는 존재하나 등록 도메인 불일치**, `INVALID_KEY`("등록되지 않은 인증키입니다")는
+  **키 자체가 없음**이다. 전자면 접속 호스트를, 후자면 `.env` 키 값을 의심해야 한다.
+- **V-World 키를 `.env`에서 갱신해도 프로세스를 재시작해야 반영된다.** `VWORLD_API_KEY`는
+  `src/config.py` 모듈 레벨 상수로 임포트 시점에 1회만 읽히고, `dashboards/app.py`의
+  `/vworld-map.html` 라우트가 그 값을 치환해 내보낸다.
 
 ## Data flow gotchas
 

@@ -270,15 +270,25 @@ def data_banner(colors, title, *lines):
 # 데이터 로드
 # ---------------------------------------------------------------------------
 
+UNSOLD_DF_COLUMNS = ["지역구", "기준월", "미분양세대수", "전월세대수", "증감률", "급증여부"]
+
+
 def load_unsold_df():
     with get_session() as s:
         rows = s.query(UnsoldHousing).order_by(UnsoldHousing.change_rate.desc()).all()
-        return pd.DataFrame([{
+        df = pd.DataFrame([{
             "지역구": r.district, "기준월": r.base_month,
             "미분양세대수": r.unsold_count, "전월세대수": r.prev_month_count,
             "증감률": r.change_rate,
             "급증여부": (r.change_rate or 0) >= UNSOLD_SPIKE_THRESHOLD_PCT,
         } for r in rows])
+        # rows가 비면 pd.DataFrame([])는 컬럼이 아예 없는 0x0 프레임이 되어
+        # 아래 unsold_df["지역구"] 같은 참조가 KeyError로 죽는다 (map_side_panel,
+        # build_tab_unsold에서 실제로 재현됨). 컬럼을 명시해 빈 데이터도 정상
+        # "데이터 없음"으로 처리되게 한다.
+        if df.empty:
+            return pd.DataFrame(columns=UNSOLD_DF_COLUMNS)
+        return df
 
 def load_price_df():
     end, start = date.today(), date.today() - timedelta(days=90)
@@ -301,6 +311,8 @@ PERMIT_MIN_DATE = pd.Timestamp("2020-01-01")
 # 들어와 구별 집계 어디에도 잡히지 않는 사례가 있었다.
 BUSAN_DISTRICT_NAMES = set(BUSAN_DISTRICT_CODES.values())
 
+PERMIT_DF_COLUMNS = ["지역구", "인허가일", "세대수", "시행사", "시공사"]
+
 
 def load_permit_df():
     with get_session() as s:
@@ -309,7 +321,7 @@ def load_permit_df():
                             "세대수": r.household_count, "시행사": r.developer,
                             "시공사": r.contractor} for r in rows])
     if df.empty:
-        return df
+        return pd.DataFrame(columns=PERMIT_DF_COLUMNS)
 
     n_raw = len(df)
 
@@ -1249,4 +1261,4 @@ def search_building_permit(n_clicks, sgg_cd, bjdong_cd, theme):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=1111)
+    app.run(debug=True, host="0.0.0.0", port=9090)
