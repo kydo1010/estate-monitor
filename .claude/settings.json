@@ -50,7 +50,15 @@
       "Bash(rm resp_tmp.json)",
       "Bash(rm -f deps_tmp.json)",
       "Bash(rm -f resp_tmp.json)",
-      "Bash(python -c \"import dashboards.app\")"
+      "Bash(python -c \"import dashboards.app\")",
+      "Bash(git -C c:/Users/ksydr/estate-monitor show --stat 66c8a9e)",
+      "PowerShell(python -c \"import requests, dash, pandas; print\\('ok'\\)\")",
+      "PowerShell(Get-Command python -All)",
+      "PowerShell(py -0p 2>&1)",
+      "PowerShell(python -m py_compile dashboards\\\\app.py)",
+      "PowerShell(if \\($?\\) { \"OK\" })",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/app.py)",
+      "Bash(python3 -)"
     ]
   }
 }

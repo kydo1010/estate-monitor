@@ -39,8 +39,10 @@ python -m src.scheduler --once
 python -m src.scheduler
 ```
 
-`python -m dashboards.app`로 직접 띄우면 `main.py`와 달리 **debug=True, port=1111**로 뜹니다
-(모듈 하단 `__main__` 블록). 운영과 동일한 조건으로 확인하려면 `python main.py --dashboard`를 쓰세요.
+`python -m dashboards.app`로 직접 띄우면 모듈 하단 `__main__` 블록이 `debug=True`로 고정해
+실행합니다 (호스트·포트는 `main.py`와 동일하게 `0.0.0.0:9090`). `python main.py --dashboard`는
+기본이 `debug=False`이며 `--debug`를 붙여야 디버그 모드가 됩니다 — 차이는 포트가 아니라
+디버그 플래그 기본값입니다.
 
 아직 테스트 스위트, 린터, 빌드 도구가 구성되어 있지 않습니다. `requirements.txt`에 먼저 추가되지
 않은 이상 `pytest`, `ruff` 등이 설치되어 있다고 가정하지 마세요. 검증은 보통
