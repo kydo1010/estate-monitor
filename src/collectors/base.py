@@ -92,10 +92,19 @@ class MolitBaseCollector:
         부산·울산·경남 전체 시·군·구 × 지정 월 전체 수집 → DB 저장.
         months: ['202606', '202605', ...] 형태. None이면 당월만.
         """
-        from src.config import ALL_DISTRICT_CODES
+        from src.config import (
+            ALL_DISTRICT_CODES, BUSAN_DISTRICT_CODES,
+            ULSAN_DISTRICT_CODES, GYEONGNAM_DISTRICT_CODES,
+        )
         from src.db import get_session, init_db
 
         init_db()
+
+        region_map = {
+            **{k: "부산" for k in BUSAN_DISTRICT_CODES},
+            **{k: "울산" for k in ULSAN_DISTRICT_CODES},
+            **{k: "경남" for k in GYEONGNAM_DISTRICT_CODES},
+        }
 
         if months is None:
             today = date.today()
@@ -106,6 +115,8 @@ class MolitBaseCollector:
             for ym in months:
                 records = self.fetch_one_month(lawd_cd, ym)
                 if records:
+                    for record in records:
+                        record["region"] = region_map.get(lawd_cd, "")
                     with get_session() as session:
                         saved = self.save(session, records)
                         session.commit()

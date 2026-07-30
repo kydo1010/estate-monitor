@@ -76,15 +76,18 @@ def save(session, agg: dict[str, dict]) -> int:
         )
 
         # 이번 달 이미 있으면 업데이트
+        # 이 API는 경남 데이터만 준다 — 울산은 별도 수집기가 필요해 region="경남" 고정.
         existing = session.query(UnsoldHousing).filter_by(
-            district=district, base_month=base_month
+            region="경남", district=district, base_month=base_month
         ).first()
         if existing:
+            existing.region           = "경남"
             existing.unsold_count     = v["unsold"]
             existing.prev_month_count = prev_count
             existing.change_rate      = change_rate
         else:
             session.add(UnsoldHousing(
+                region="경남",
                 district=district,
                 base_month=base_month,
                 unsold_count=v["unsold"],

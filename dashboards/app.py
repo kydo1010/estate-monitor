@@ -1,6 +1,6 @@
 """
 dashboards/app.py
-부산 분양·거래시장 통합 모니터 (라이트모드 고정 + V-World 지도)
+부산·울산·경남 분양·거래시장 통합 모니터 (라이트모드 고정 + V-World 지도)
 
 실행: python -m dashboards.app → http://127.0.0.1:8050
 """
@@ -20,6 +20,8 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, clientside_c
 from src.config import (
     UNSOLD_SPIKE_THRESHOLD_PCT, VWORLD_API_KEY,
     BUSAN_DISTRICT_CODES, BUSAN_DONG_CODES,
+    ULSAN_DISTRICT_CODES, GYEONGNAM_DISTRICT_CODES,
+    ALL_DISTRICT_CODES,
 )
 from src.db import (
     get_avg_price_by_district, get_session,
@@ -155,14 +157,14 @@ def data_banner(colors, title, *lines):
 # 데이터 로드
 # ---------------------------------------------------------------------------
 
-UNSOLD_DF_COLUMNS = ["지역구", "기준월", "미분양세대수", "전월세대수", "증감률", "급증여부"]
+UNSOLD_DF_COLUMNS = ["region", "지역구", "기준월", "미분양세대수", "전월세대수", "증감률", "급증여부"]
 
 
 def load_unsold_df():
     with get_session() as s:
         rows = s.query(UnsoldHousing).order_by(UnsoldHousing.change_rate.desc()).all()
         df = pd.DataFrame([{
-            "지역구": r.district, "기준월": r.base_month,
+            "region": r.region, "지역구": r.district, "기준월": r.base_month,
             "미분양세대수": r.unsold_count, "전월세대수": r.prev_month_count,
             "증감률": r.change_rate,
             "급증여부": (r.change_rate or 0) >= UNSOLD_SPIKE_THRESHOLD_PCT,
@@ -195,6 +197,23 @@ PERMIT_MIN_DATE = pd.Timestamp("2020-01-01")
 # 지역구는 반드시 config의 매핑을 거친다. "부산"처럼 구·군이 아닌 값이 섞여
 # 들어와 구별 집계 어디에도 잡히지 않는 사례가 있었다.
 BUSAN_DISTRICT_NAMES = set(BUSAN_DISTRICT_CODES.values())
+
+# 부산·울산·경남 전체 시·군·구명. 지도가 이제 세 지역을 모두 다루므로 클릭 검증도
+# 부산만으로 좁혀 두면 안 된다 (_as_district 참고).
+ALL_DISTRICT_NAMES = set(ALL_DISTRICT_CODES.values())
+
+# 지역구명 → region 추정 맵. price_df·permit_df·trend_df는 Trade/BuildingPermit
+# 원본에 region 컬럼이 없거나(BuildingPermit) 집계 과정에서 region이 빠져
+# (get_avg_price_by_district가 district로만 group by) 있어, 상단 지역 선택 바로
+# 필터링하려면 지역구명에서 역으로 추정하는 수밖에 없다. unsold_df만 DB의
+# UnsoldHousing.region 컬럼을 그대로 쓴다 (_filter_by_selection 참고).
+# 부산·울산 사이에 이름이 겹치는 구가 있다(중구·남구·동구·북구) — 울산 데이터가
+# 아직 이 두 테이블에 전혀 없으므로, 겹치는 이름은 마지막에 덮어쓰는 부산이 이긴다.
+DISTRICT_TO_REGION = {
+    **{name: "경남" for name in GYEONGNAM_DISTRICT_CODES.values()},
+    **{name: "울산" for name in ULSAN_DISTRICT_CODES.values()},
+    **{name: "부산" for name in BUSAN_DISTRICT_CODES.values()},
+}
 
 PERMIT_DF_COLUMNS = ["지역구", "인허가일", "세대수", "시행사", "시공사"]
 
@@ -310,17 +329,44 @@ trend_df   = load_trend_df()
 n_spike    = int(unsold_df["급증여부"].sum()) if not unsold_df.empty else 0
 updated_at = date.today().strftime("%Y-%m-%d")
 
-# 지도(iframe)의 구·군 색상용 {구·군명: 미분양세대수} 딕셔너리.
+# 지도(iframe)의 구·군 색상용 {"region_구·군명": 미분양세대수} 딕셔너리.
+# 부산·울산 사이에 이름이 겹치는 구(중구·남구·동구·북구)가 있어 지역구명만으로는
+# 키가 충돌한다 — region을 접두어로 붙여 구분한다.
 # - 한 구에 여러 기준월 행이 있을 수 있어 drop_duplicates로 첫 행만 남긴다.
 #   unsold_df는 증감률 내림차순이므로 map_side_panel의 `.values[0]`과 같은 행을 고른다.
 # - numpy 정수/NaN은 그대로 두면 JSON 직렬화나 iframe 쪽 비교에서 걸리므로
 #   파이썬 int로 정규화한다.
 unsold_dict = (
-    {str(k): int(v) for k, v in
-     unsold_df.drop_duplicates("지역구")
-              .set_index("지역구")["미분양세대수"].fillna(0).items()}
+    {f"{region}_{district}": int(count) for (region, district), count in
+     unsold_df.drop_duplicates(["region", "지역구"])
+              .set_index(["region", "지역구"])["미분양세대수"].fillna(0).items()}
     if not unsold_df.empty else {}
 )
+
+# 섹션 제목/구분선 스타일. build_shell()과 render_*_section 콜백들이 함께 쓰므로
+# 셸 안 지역 변수 대신 모듈 레벨 상수로 둔다 (라이트모드 고정이라 재계산 불필요).
+SECTION_WRAP_STYLE = {"marginTop":"48px","paddingTop":"32px",
+                       "borderTop":f"1px solid {LIGHT_COLORS['border']}"}
+SECTION_TITLE_STYLE = {"color":LIGHT_COLORS["text"],"fontSize":"22px","fontWeight":"700",
+                        "margin":"0 0 20px"}
+
+
+def _filter_by_selection(df, sel, district_col="지역구"):
+    """
+    상단 지역 선택 바(selected-region-store)의 {"region","district"}에 맞춰 df를 좁힌다.
+
+    df에 'region' 컬럼이 있으면(unsold_df) 그대로 쓰고, 없으면(price_df·trend_df·
+    permit_df — Trade/BuildingPermit 원본에 region이 없거나 집계 중 소실됨)
+    DISTRICT_TO_REGION으로 지역구명에서 역추정한다.
+    """
+    if df.empty:
+        return df
+    region, district = sel.get("region"), sel.get("district")
+    region_series = df["region"] if "region" in df.columns else df[district_col].map(DISTRICT_TO_REGION)
+    out = df[region_series == region]
+    if district:
+        out = out[out[district_col] == district]
+    return out
 
 # ---------------------------------------------------------------------------
 # 탭별 레이아웃
@@ -397,6 +443,7 @@ def build_tab_unsold(colors, df):
     spike_df = df[df["급증여부"]].copy()
     n_spike_local = len(spike_df)
     n_total = len(df)
+    region_label = df["region"].iloc[0] if not df.empty else ""
 
     bar_df = df.sort_values("미분양세대수", ascending=True)
     fig = go.Figure(go.Bar(
@@ -428,7 +475,8 @@ def build_tab_unsold(colors, df):
             spike_note,
         ),
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
-                 children=[kpi(colors, "모니터링 지역", n_total, sub="부산 16개 구·군"),
+                 children=[kpi(colors, "모니터링 지역", n_total,
+                                sub=f"{region_label} {n_total}개 구·군" if region_label else "데이터 없음"),
                             kpi(colors, "급증 타깃", n_spike_local, colors["danger"],
                                 f"전월 대비 {UNSOLD_SPIKE_THRESHOLD_PCT:.0f}%↑"),
                             kpi(colors, "정상 지역", n_total - n_spike_local, colors["ok"])]),
@@ -443,7 +491,7 @@ def build_tab_unsold(colors, df):
     ])
 
 
-def build_tab_price(colors, df, tdf):
+def build_tab_price(colors, df, tdf, region_label="전체"):
     PT = get_plotly_template(colors)
 
     # 기간·건수는 집계본(df)이 아니라 거래 원본(tdf)에서 뽑는다.
@@ -488,7 +536,7 @@ def build_tab_price(colors, df, tdf):
             fill="tozeroy", fillcolor=_hex_to_rgba(colors["accent"], 0.08),
         ))
     fig_t.update_layout(
-        **PT, title="부산 전체 월별 평균 거래가 추이", height=260,
+        **PT, title=f"{region_label} 월별 평균 거래가 추이", height=260,
         # type="category"가 핵심이다. 축 타입을 자동에 맡기면 Plotly가 "2026-07"을
         # 날짜로 파싱해 날짜축으로 바꾸고, 그러면 눈금을 스스로 고르기 때문에
         # 마지막 달(예: 7월)의 라벨이 잘려 데이터는 그려졌는데 없는 것처럼 보인다.
@@ -500,7 +548,7 @@ def build_tab_price(colors, df, tdf):
     return html.Div([
         banner,
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
-                 children=[kpi(colors, "부산 평균", f"{avg_all:,}만원", colors["accent"]),
+                 children=[kpi(colors, f"{region_label} 평균", f"{avg_all:,}만원", colors["accent"]),
                             kpi(colors, "최고가 지역구", top_gu),
                             kpi(colors, "총 거래건수", f"{total_d:,}건", colors["accent2"], "최근 3개월")]),
         dcc.Graph(figure=fig_t),
@@ -604,18 +652,62 @@ def build_tab_permit(colors, df):
 # 셸(헤더/본문/푸터) — 테마가 바뀔 때만 재생성됨
 # ---------------------------------------------------------------------------
 
+def build_region_select_bar(colors):
+    """
+    페이지 최상단(지도 섹션보다 위) 지역 선택 바. region-select/district-select/
+    검색 버튼과 selected-region-store를 담는다. 미분양·거래가·인허가 3개 섹션은
+    이 store 변경에 반응해 다시 그려진다 (render_unsold_section 등 참고).
+    지도 섹션은 값이 바뀌어도 재요청하지 않고 카메라만 이동한다 (selected-region-store를
+    Input으로 받아 iframe에 postMessage하는 clientside_callback, 콜백 섹션 참고).
+    """
+    CARD = get_card_style(colors)
+    return html.Div([
+        html.Div(style={**CARD, "display":"flex", "gap":"12px", "alignItems":"center",
+                        "marginBottom":"24px"}, children=[
+            dcc.Dropdown(
+                id="region-select",
+                options=[
+                    {"label": "부산광역시", "value": "부산"},
+                    {"label": "울산광역시", "value": "울산"},
+                    {"label": "경상남도",   "value": "경남"},
+                ],
+                value="부산", clearable=False,
+                style={"width":"200px"},
+            ),
+            dcc.Dropdown(
+                id="district-select",
+                options=[], value=None,
+                placeholder="구·군 선택 (선택 안 하면 전체)",
+                style={"width":"200px"},
+            ),
+            html.Button("검색", id="region-search-btn", n_clicks=0,
+                style={
+                    "backgroundColor": colors["accent"],
+                    "color": "#ffffff",
+                    "border": "none",
+                    "borderRadius": "8px",
+                    "padding": "8px 20px",
+                    "fontSize": "18px",
+                    "fontWeight": "600",
+                    "cursor": "pointer",
+                }),
+        ]),
+        dcc.Store(id="selected-region-store", data={"region": "부산", "district": None}),
+    ])
+
+
 def build_shell():
     """
-    헤더 + 서브헤더 + 4개 섹션(지도/미분양/거래가/인허가)을 세로로 이어 붙인
-    단일 페이지 + 푸터를 반환. 앱 시작 시 한 번만 호출되어 page-content의
+    헤더 + 서브헤더 + 지역 선택 바 + 4개 섹션(지도/미분양/거래가/인허가)을 세로로
+    이어 붙인 단일 페이지 + 푸터를 반환. 앱 시작 시 한 번만 호출되어 page-content의
     초기값으로 쓰인다.
+
+    미분양·거래가·인허가 섹션은 여기서 내용을 직접 채우지 않는다 — id만 가진 빈
+    컨테이너를 두고, render_unsold_section/render_price_section/render_permit_section
+    콜백이 selected-region-store를 구독해 채운다 (페이지 최초 로드 시에도 Input이
+    Store의 초기값으로 한 번 발동하므로 정적 렌더링과 동일하게 즉시 채워진다).
     """
     colors = LIGHT_COLORS
-
-    SECTION_WRAP = {"marginTop":"48px","paddingTop":"32px",
-                     "borderTop":f"1px solid {colors['border']}"}
-    SECTION_TITLE = {"color":colors["text"],"fontSize":"22px","fontWeight":"700",
-                      "margin":"0 0 20px"}
 
     return html.Div(
         style={"backgroundColor":colors["bg"],"minHeight":"100vh",
@@ -631,7 +723,7 @@ def build_shell():
                             "boxShadow":"0 1px 4px rgba(0,0,0,0.06)"}, children=[
                 html.Div(style={"display":"flex","alignItems":"center","gap":"12px"}, children=[
                     html.Span("●", style={"color":colors["accent"],"fontSize":"14px"}),
-                    html.Span("부산 분양·거래시장 통합 모니터",
+                    html.Span("부산·울산·경남 분양·거래시장 통합 모니터",
                               style={"fontWeight":"800","fontSize":"25px",
                                      "letterSpacing":"-0.5px","color":colors["text"]}),
                 ]),
@@ -648,26 +740,17 @@ def build_shell():
                        style={"color":colors["muted"],"fontSize":"13px","margin":"0"}),
             ]),
 
-            # 본문 — 지도 / 미분양 / 거래가 / 인허가 4개 섹션을 세로로 이어 붙인
-            # 단일 페이지. 지도 섹션은 제목 없이 바로 시작하고, 나머지는 구분선 +
-            # 섹션 제목으로 시작한다.
+            # 본문 — 지역 선택 바 + 지도 / 미분양 / 거래가 / 인허가 4개 섹션을
+            # 세로로 이어 붙인 단일 페이지. 지도 섹션은 제목 없이 바로 시작하고,
+            # 나머지는 구분선 + 섹션 제목으로 시작한다.
             html.Div(style={"padding":"24px 32px"}, children=[
+                build_region_select_bar(colors),
+
                 build_tab_map(colors),
 
-                html.Div(style=SECTION_WRAP, children=[
-                    html.H2("🔔 미분양 알림", style=SECTION_TITLE),
-                    build_tab_unsold(colors, unsold_df),
-                ]),
-
-                html.Div(style=SECTION_WRAP, children=[
-                    html.H2("📊 거래가 분석", style=SECTION_TITLE),
-                    build_tab_price(colors, price_df, trend_df),
-                ]),
-
-                html.Div(style=SECTION_WRAP, children=[
-                    html.H2("🏗 착공·허가", style=SECTION_TITLE),
-                    build_tab_permit(colors, permit_df),
-                ]),
+                html.Div(id="unsold-section", style=SECTION_WRAP_STYLE),
+                html.Div(id="price-section",  style=SECTION_WRAP_STYLE),
+                html.Div(id="permit-section", style=SECTION_WRAP_STYLE),
             ]),
 
             # 푸터
@@ -682,7 +765,7 @@ def build_shell():
 # ---------------------------------------------------------------------------
 # 앱
 # ---------------------------------------------------------------------------
-app = Dash(__name__, title="부산 분양·거래시장 통합 모니터",
+app = Dash(__name__, title="부산·울산·경남 분양·거래시장 통합 모니터",
            suppress_callback_exceptions=True)
 
 
@@ -704,6 +787,84 @@ app.layout = html.Div([
 # ---------------------------------------------------------------------------
 # 콜백
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 지역 선택 바 — region-select/district-select/검색 버튼 → selected-region-store
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("district-select", "options"),
+    Output("district-select", "value"),
+    Input("region-select", "value"),
+)
+def update_district_options(region):
+    mapping = {
+        "부산": BUSAN_DISTRICT_CODES,
+        "울산": ULSAN_DISTRICT_CODES,
+        "경남": GYEONGNAM_DISTRICT_CODES,
+    }
+    codes = mapping.get(region, {})
+    return [{"label": v, "value": v} for v in codes.values()], None
+
+
+@app.callback(
+    Output("selected-region-store", "data"),
+    Input("region-search-btn", "n_clicks"),
+    State("region-select", "value"),
+    State("district-select", "value"),
+    prevent_initial_call=True,
+)
+def update_selected_region(n_clicks, region, district):
+    return {"region": region, "district": district}
+
+
+# selected-region-store가 바뀔 때마다 지도 iframe에 postMessage로 이동을 지시한다.
+# 이 콜백은 자기 자신의 Output이 곧 자신의 Input이다(둘 다 selected-region-store.data) —
+# allow_duplicate=True로 update_selected_region과의 Output 소유권 충돌을 피하고,
+# 항상 no_update를 반환해 store 값 자체는 절대 바꾸지 않으므로 순환 갱신은 일어나지
+# 않는다. postMessage는 store에 되돌려 쓸 결과가 없는 순수 부수효과인데, Dash는
+# clientside_callback에도 Output이 반드시 있어야 하므로 이 "자기참조 + no_update"
+# 패턴으로 우회한다.
+clientside_callback(
+    """
+    function(sel) {
+        var iframe = document.getElementById('vworld-iframe');
+        if (iframe && iframe.contentWindow && sel) {
+            iframe.contentWindow.postMessage(
+                { type: 'move_to_region', region: sel.region, district: sel.district }, '*');
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("selected-region-store", "data", allow_duplicate=True),
+    Input("selected-region-store", "data"),
+    prevent_initial_call=True,
+)
+
+
+def _section_children(title, content):
+    return [html.H2(title, style=SECTION_TITLE_STYLE), content]
+
+
+@app.callback(Output("unsold-section", "children"), Input("selected-region-store", "data"))
+def render_unsold_section(sel):
+    df = _filter_by_selection(unsold_df, sel)
+    return _section_children("🔔 미분양 알림", build_tab_unsold(LIGHT_COLORS, df))
+
+
+@app.callback(Output("price-section", "children"), Input("selected-region-store", "data"))
+def render_price_section(sel):
+    df  = _filter_by_selection(price_df, sel)
+    tdf = _filter_by_selection(trend_df, sel)
+    return _section_children("📊 거래가 분석",
+                              build_tab_price(LIGHT_COLORS, df, tdf, region_label=sel["region"]))
+
+
+@app.callback(Output("permit-section", "children"), Input("selected-region-store", "data"))
+def render_permit_section(sel):
+    df = _filter_by_selection(permit_df, sel)
+    return _section_children("🏗 착공·허가", build_tab_permit(LIGHT_COLORS, df))
+
 
 # 지도(iframe) → Dash 브리지의 나머지 절반.
 # gu-click-interval이 500ms마다 깨워 주면 window.__lastGuClick을 읽어
@@ -765,33 +926,35 @@ clientside_callback(
 
 def parse_map_click(data):
     """
-    clicked-gu-store 값 → (구, 동).
+    clicked-gu-store 값 → (구, 동, region).
 
-    지도는 이제 '{"gu":"중구","dong":"보수동"}' JSON 문자열을 보낸다.
-    구 이름만 오던 예전 형식도 그대로 받아 준다 — 브라우저에 남아 있던
-    옛 iframe이 캐시에서 뜨면 그 형식으로 오고, 그때 패널이 죽으면 안 된다.
+    지도는 이제 '{"gu":"중구","dong":"보수동","region":"부산"}' JSON 문자열을
+    보낸다. region이 없는(구·동만 보내던) 예전 형식과 구 이름 문자열만 오던 더
+    예전 형식도 그대로 받아 준다 — 브라우저에 남아 있던 옛 iframe이 캐시에서
+    뜨면 그 형식으로 오고, 그때 패널이 죽으면 안 된다. 두 예전 형식 모두 region
+    정보가 없으므로 "부산"으로 간주한다 (그 시절 iframe은 부산만 다뤘다).
 
     다만 파싱에 실패한 값을 구 이름으로 흘려보내지는 않는다. 예전에 이 함수가
     없던 시절, store에 들어온 JSON 문자열이 헤더 H3에 그대로 렌더돼
     `{"gu":"수영구","dong":"광안4동"}`가 화면에 뜬 적이 있다. 알 수 없는 형식은
-    (None, None)으로 떨어뜨려 안내 문구를 띄우는 편이 낫다.
+    (None, None, None)으로 떨어뜨려 안내 문구를 띄우는 편이 낫다.
     """
     if not data:
-        return None, None
+        return None, None, None
     if isinstance(data, dict):
-        return _as_district(data.get("gu")), data.get("dong")
+        return _as_district(data.get("gu")), data.get("dong"), data.get("region", "부산")
     try:
         parsed = json.loads(data)
     except (TypeError, ValueError):
-        return _as_district(data), None    # 예전 형식: 구 이름 문자열
+        return _as_district(data), None, "부산"    # 예전 형식: 구 이름 문자열
     if isinstance(parsed, dict):
-        return _as_district(parsed.get("gu")), parsed.get("dong")
-    return _as_district(parsed), None
+        return _as_district(parsed.get("gu")), parsed.get("dong"), parsed.get("region", "부산")
+    return _as_district(parsed), None, "부산"
 
 
 def _as_district(value):
-    """구·군 이름으로 확인된 값만 통과시킨다 (config 매핑 기준)."""
-    if isinstance(value, str) and value.strip() in BUSAN_DISTRICT_NAMES:
+    """구·군 이름으로 확인된 값만 통과시킨다 (config 매핑 기준, 부산·울산·경남 전체)."""
+    if isinstance(value, str) and value.strip() in ALL_DISTRICT_NAMES:
         return value.strip()
     return None
 
@@ -806,14 +969,14 @@ def map_side_panel(click_data):
     CARD = get_card_style(colors)
     TABLE_STYLE = get_table_style(colors)
 
-    gu_name, dong_name = parse_map_click(click_data)
+    gu_name, dong_name, region_name = parse_map_click(click_data)
 
     if not gu_name:
         return html.P("← 지도에서 구·군을 클릭하세요",
                       style={"color":colors["muted"],"fontSize":"18px",
                              "marginTop":"60px","textAlign":"center"})
 
-    u_row   = unsold_df[unsold_df["지역구"] == gu_name]
+    u_row   = unsold_df[(unsold_df["지역구"] == gu_name) & (unsold_df["region"] == region_name)]
     p_row   = price_df[price_df["지역구"] == gu_name]
     # 인허가는 구 단위 유지 — building_permits에 동 정보가 없다.
     pm_rows = permit_df[permit_df["지역구"] == gu_name].sort_values(

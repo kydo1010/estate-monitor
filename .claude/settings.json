@@ -63,7 +63,22 @@
       "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat src/config.py src/scheduler.py)",
       "Bash(git -C c:/Users/ksydr/estate-monitor status --porcelain)",
       "PowerShell(python -m py_compile src\\\\collectors\\\\base.py src\\\\collectors\\\\molit_apartment.py src\\\\collectors\\\\molit_apt_rights.py src\\\\collectors\\\\molit_officetel.py src\\\\config.py)",
-      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat src/collectors/base.py src/collectors/molit_apartment.py src/collectors/molit_apt_rights.py src/collectors/molit_officetel.py src/config.py)"
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat src/collectors/base.py src/collectors/molit_apartment.py src/collectors/molit_apt_rights.py src/collectors/molit_officetel.py src/config.py)",
+      "Bash(mkdir -p /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad)",
+      "Bash(python3 - /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_script_0.js)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_script_1.js)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/assets/vworld_map.html)",
+      "PowerShell(python -m py_compile dashboards\\\\app.py src\\\\db.py src\\\\collectors\\\\base.py src\\\\collectors\\\\busan_unsold.py src\\\\collectors\\\\gyeongnam_unsold.py)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat src/db.py src/collectors/busan_unsold.py src/collectors/gyeongnam_unsold.py src/collectors/base.py dashboards/app.py)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_body.js)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/assets/vworld_map.html dashboards/app.py)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_body2.js)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/app.py dashboards/assets/vworld_map.html)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_final.js)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_last.js)",
+      "Bash(python -m py_compile dashboards/app.py)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_bugfix.js)"
     ]
   }
 }

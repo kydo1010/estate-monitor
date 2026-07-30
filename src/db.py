@@ -25,6 +25,8 @@ from sqlalchemy import (
     DateTime,
     UniqueConstraint,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -51,6 +53,7 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    region = Column(String(10), index=True)                     # '부산'/'울산'/'경남', 기존 데이터 호환 위해 nullable
     district = Column(String(20), nullable=False, index=True)   # 예: 강남구
     dong = Column(String(30))                                   # 법정동
     complex_name = Column(String(100))                          # 단지명
@@ -76,6 +79,7 @@ class UnsoldHousing(Base):
     __tablename__ = "unsold_housing"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    region = Column(String(10), nullable=False, index=True)     # '부산'/'울산'/'경남'
     district = Column(String(20), nullable=False, index=True)
     base_month = Column(String(7), nullable=False, index=True)  # 'YYYY-MM'
     unsold_count = Column(Integer, nullable=False)
@@ -84,7 +88,7 @@ class UnsoldHousing(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint("district", "base_month", name="uq_unsold_dedup"),
+        UniqueConstraint("region", "district", "base_month", name="uq_unsold_dedup"),
     )
 
 
@@ -116,6 +120,15 @@ class BuildingPermit(Base):
 def init_db() -> None:
     """테이블이 없으면 생성. main.py나 최초 실행 시 1회 호출."""
     Base.metadata.create_all(bind=engine)
+
+    # region 컬럼 없는 기존 DB 대응 — ALTER TABLE로 추가
+    inspector = inspect(engine)
+    for table, col in [("unsold_housing", "region"), ("trades", "region")]:
+        existing = [c["name"] for c in inspector.get_columns(table)]
+        if col not in existing:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} VARCHAR(10)"))
+                conn.commit()
 
 
 @contextmanager

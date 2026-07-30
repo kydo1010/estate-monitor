@@ -106,14 +106,21 @@
     var DATA_SIGG    = 'LT_C_ADSIGG_INFO';
     var DATA_EMD     = 'LT_C_ADEMD_INFO';
 
-    var BUSAN_LON  = 129.0756;
-    var BUSAN_LAT  = 35.1796;
-    var BUSAN_ZOOM = 11;
+    // 최초 카메라 위치(부산 중심). 지오메트리가 아직 로드되지 않은 시점이라
+    // bbox 기반 이동을 쓸 수 없어 고정값이 필요하다 — 로드가 끝나면 Dash 쪽
+    // 지역 선택 바(region-select/district-select)가 move_to_region 메시지로
+    // 원하는 시·군·구의 실제 bbox로 이동시킬 수 있다.
+    var INIT_LON  = 129.0756;
+    var INIT_LAT  = 35.1796;
+    var INIT_ZOOM = 11;
 
-    // 데이터 API는 전국을 주므로 부산 외곽을 넉넉히 감싸는 BOX로 1차 필터하고,
-    // 걸려 들어온 김해·양산·울산은 아래 isBusan()에서 코드로 걷어낸다.
-    var BUSAN_BBOX  = [128.70, 34.80, 129.40, 35.45];   // EPSG:4326
-    var BUSAN_SIDO  = '26';
+    // 시도 코드 → 지역명. isInRegion() 필터 기준이자, 미분양 색칠 키
+    // ("지역_구군")와 클릭 브리지에 실어 보내는 region 값의 출처이기도 하다.
+    var SIDO_TO_REGION = { '26': '부산', '31': '울산', '48': '경남' };
+
+    // 데이터 API는 전국을 주므로 부산·울산·경남을 넉넉히 감싸는 BOX로 1차 필터하고,
+    // 그 밖의 시도가 걸려 들어오면 아래 isInRegion()에서 코드로 걷어낸다.
+    var REGION_BBOX = [127.6, 34.6, 129.5, 35.7];       // EPSG:4326
 
     var PAGE_SIZE = 1000;      // 데이터 API 1회 최대치
     var MAX_PAGES = 3;
@@ -127,7 +134,13 @@
     var dongSource  = null;    // 동 단위 클릭 판정용
     var dongLayer   = null;
     var guNameByCode = {};     // '26110' → '중구'
+    var regionFeaturesByName = {};  // '부산_중구' → 시·군·구 ol.Feature (moveToRegion 이동용)
     var wmsInfoWarned = false;
+
+    // 현재 지역 선택 바(Dash)에서 고른 값. move_to_region 메시지를 받을 때마다
+    // 갱신되고, guFillStyle이 이 값을 읽어 선택된 지역/구·군만 색칠한다.
+    // 초기값은 Dash 쪽 selected-region-store의 초기값(부산, 구·군 미선택)과 맞춘다.
+    var currentSelection = { region: '부산', district: null };
 
     // Dash 쪽에서 준비 여부를 들여다볼 수 있게 열어 둔다.
     window.vworldReady = false;
@@ -185,8 +198,8 @@
           interactionDensity: vw.ol3.DensityType.BASIC,
           controlsAutoArrange: true,
           initPosition: {
-            center: ol.proj.transform([BUSAN_LON, BUSAN_LAT], 'EPSG:4326', 'EPSG:3857'),
-            zoom:   BUSAN_ZOOM,
+            center: ol.proj.transform([INIT_LON, INIT_LAT], 'EPSG:4326', 'EPSG:3857'),
+            zoom:   INIT_ZOOM,
           },
         };
 
@@ -287,13 +300,13 @@
         });
     }
 
-    // 지정한 데이터셋의 부산 피처를 전부(페이지를 넘겨가며) 모아 온다.
+    // 지정한 데이터셋의 대상 지역(부산·울산·경남) 피처를 전부(페이지를 넘겨가며) 모아 온다.
     function fetchAdmin(dataName) {
       var acc = [];
 
       function nextPage(page) {
         return requestPage(dataName, page).then(function (fc) {
-          var read = readBusanFeatures(fc);
+          var read = readRegionFeatures(fc);
           acc = acc.concat(read.features);
           // 꽉 찬 페이지가 오면 뒤가 더 있을 수 있다.
           if (read.rawCount >= PAGE_SIZE && page < MAX_PAGES) {
@@ -305,9 +318,9 @@
 
       return nextPage(1).then(function (features) {
         if (!features.length) {
-          throw new Error(dataName + ': 부산 피처가 0건입니다');
+          throw new Error(dataName + ': 대상 지역 피처가 0건입니다');
         }
-        console.log('[vworld] ' + dataName + ' 부산 피처 ' + features.length + '건');
+        console.log('[vworld] ' + dataName + ' 대상 지역 피처 ' + features.length + '건');
         return features;
       });
     }
@@ -327,7 +340,7 @@
         geometry:   'true',
         attribute:  'true',
         crs:        'EPSG:4326',
-        geomFilter: 'BOX(' + BUSAN_BBOX.join(',') + ')',
+        geomFilter: 'BOX(' + REGION_BBOX.join(',') + ')',
       };
       return getJson(DATA_API, params).then(unwrapFeatureCollection);
     }
@@ -440,13 +453,25 @@
       return parts[parts.length - 1];
     }
 
-    // 코드 앞 두 자리가 부산(26)이면 채택. 코드가 비면 주소 문자열로 판정한다.
-    function isBusan(code, fullNm) {
-      if (code) return code.slice(0, 2) === BUSAN_SIDO;
-      return String(fullNm || '').indexOf('부산') === 0;
+    // 코드 앞 두 자리가 부산(26)·울산(31)·경남(48)이면 채택. 코드가 비면 주소 문자열로 판정한다.
+    function isInRegion(code, fullNm) {
+      if (code) return !!SIDO_TO_REGION[code.slice(0, 2)];
+      var nm = String(fullNm || '');
+      return nm.indexOf('부산') === 0 || nm.indexOf('울산') === 0 || nm.indexOf('경상남도') === 0;
     }
 
-    function readBusanFeatures(fc) {
+    // isInRegion과 같은 기준으로 실제 지역명을 뽑는다. 색칠 키("지역_구군")와
+    // 클릭 브리지의 region 값 모두 여기서 나온다.
+    function regionFromCode(code, fullNm) {
+      if (code) return SIDO_TO_REGION[code.slice(0, 2)] || '';
+      var nm = String(fullNm || '');
+      if (nm.indexOf('부산') === 0) return '부산';
+      if (nm.indexOf('울산') === 0) return '울산';
+      if (nm.indexOf('경상남도') === 0) return '경남';
+      return '';
+    }
+
+    function readRegionFeatures(fc) {
       var all = new ol.format.GeoJSON().readFeatures(fc, {
         dataProjection:    'EPSG:4326',
         featureProjection: 'EPSG:3857',
@@ -457,15 +482,16 @@
         var props  = f.getProperties();
         var code   = pick(props, CODE_KEYS);
         var fullNm = pick(props, FULL_KEYS);
-        if (!isBusan(code, fullNm)) return;
+        if (!isInRegion(code, fullNm)) return;
 
         var name = pick(props, NAME_KEYS) || lastToken(fullNm);
         var gu   = guFromFullName(fullNm)
                 || (code ? guNameByCode[code.slice(0, 5)] : '')
                 || (/[구군]$/.test(name) ? name : '');
 
-        f.set('__code', code);
-        f.set('__gu',   gu);
+        f.set('__code',   code);
+        f.set('__gu',     gu);
+        f.set('__region', regionFromCode(code, fullNm));
         // 구·군 피처는 이름 자체가 구 이름이라 동이 없다.
         f.set('__dong', (name && name !== gu) ? name : '');
         kept.push(f);
@@ -477,19 +503,31 @@
     /* --- 레이어 구성 ---------------------------------------------------- */
 
     function buildGuLayer(features) {
+      var skipped = 0;
       features.forEach(function (f) {
-        var code = f.get('__code');
-        var gu   = f.get('__gu');
+        var code   = f.get('__code');
+        var gu     = f.get('__gu');
+        var region = f.get('__region');
         if (code && gu) guNameByCode[code.slice(0, 5)] = gu;
+        // 부산·울산 사이에 이름이 겹치는 구가 있어(중구·남구·동구·북구) region을
+        // 붙인 키로 저장한다 — 안 붙이면 둘 중 하나가 다른 하나를 덮어써 버린다.
+        if (gu && region) {
+          regionFeaturesByName[region + '_' + gu] = f;
+        } else {
+          skipped++;   // region 또는 gu를 못 구한 피처 — moveToRegion 매칭에서 빠진다
+        }
       });
+      // regionFeaturesByName 키가 실제로 "{region}_{gu}" 형식인지, 몇 건이나
+      // 등록됐는지 여기서 확인할 수 있다 (moveToRegion의 "매칭 0건" 원인 진단용).
+      console.log('[vworld] regionFeaturesByName 등록 ' + Object.keys(regionFeaturesByName).length
+                 + '건 (스킵 ' + skipped + '건), 예시:', Object.keys(regionFeaturesByName).slice(0, 5));
 
       // 스타일을 함수로 두면 미분양 값이 바뀔 때 changed()만 부르면 되고,
-      // 레이어를 다시 만들거나 setStyle을 돌 필요가 없다.
+      // 레이어를 다시 만들거나 setStyle을 돌 필요가 없다. guFillStyle 자체가
+      // feature를 받아 currentSelection과 대조하므로 여기선 그대로 넘기기만 한다.
       guLayer = new ol.layer.Vector({
         source: new ol.source.Vector({ features: features }),
-        style: function (feature) {
-          return guFillStyle(getColor(unsoldData[feature.get('__gu')] || 0));
-        },
+        style: guFillStyle,
       });
       olMap.addLayer(guLayer);
       showLegend(true);
@@ -514,10 +552,35 @@
       console.log('[vworld] 읍면동 클릭 레이어 추가 (' + features.length + '개)');
     }
 
-    function guFillStyle(color) {
+    // 레이어 style 콜백 — feature 하나마다 호출된다. currentSelection에 해당하는
+    // feature만 미분양 색상(coloredFillStyle)을 칠하고, 나머지는 무채색
+    // (neutralFillStyle)으로 흐린다.
+    //   - district 선택됨: "지역_구군" 키가 정확히 일치하는 feature만 선택
+    //   - region만 선택됨: "지역_"로 시작하는 모든 feature가 선택
+    function guFillStyle(feature) {
+      var key = feature.get('__region') + '_' + feature.get('__gu');
+      var isSelected = currentSelection.district
+        ? key === (currentSelection.region + '_' + currentSelection.district)
+        : key.indexOf(currentSelection.region + '_') === 0;
+
+      if (!isSelected) {
+        return neutralFillStyle();
+      }
+      return coloredFillStyle(getColor(unsoldData[key] || 0));
+    }
+
+    function coloredFillStyle(color) {
       return new ol.style.Style({
         fill:   new ol.style.Fill({ color: color + 'bb' }),
         stroke: new ol.style.Stroke({ color: '#ffffff', width: 1.5 }),
+      });
+    }
+
+    // 선택 밖의 시·군·구용 — 채움 없이 옅은 회색 윤곽선만 남긴다.
+    function neutralFillStyle() {
+      return new ol.style.Style({
+        fill:   new ol.style.Fill({ color: 'rgba(148,163,184,0.12)' }),
+        stroke: new ol.style.Stroke({ color: '#9ca3af', width: 1 }),
       });
     }
 
@@ -560,7 +623,7 @@
       var gu = hit.get('__gu');
       if (!gu) return false;
 
-      onDongClick(gu, hit.get('__dong') || '');
+      onDongClick(gu, hit.get('__dong') || '', hit.get('__region') || '');
       return true;
     }
 
@@ -592,7 +655,7 @@
                     || (code ? guNameByCode[code.slice(0, 5)] : '')
                     || (/[구군]$/.test(name) ? name : '');
           if (!gu) return;
-          onDongClick(gu, (name && name !== gu) ? name : '');
+          onDongClick(gu, (name && name !== gu) ? name : '', regionFromCode(code, fullNm));
         })
         .catch(function (e) {
           if (!wmsInfoWarned) {
@@ -602,7 +665,7 @@
         });
     }
 
-    function onDongClick(guName, dongName) {
+    function onDongClick(guName, dongName, regionName) {
       // Dash 브리지: 부모의 dcc.Interval(gu-click-interval)이 500ms마다
       // window.__lastGuClick을 폴링해 clicked-gu-store로 옮긴다.
       // 이 페이지는 부모와 같은 origin(/vworld-map.html)에서 서빙되므로
@@ -610,7 +673,13 @@
       //
       // 값은 JSON 문자열이다. 브리지가 "이전 값과 같으면 무시"로 중복 갱신을
       // 걸러내는데, 객체를 그대로 넣으면 매번 다른 참조라 그 비교가 깨진다.
-      var payload = JSON.stringify({ gu: guName, dong: dongName });
+      //
+      // region: 부산·울산 사이에 이름이 겹치는 구가 있어(중구·남구·동구·북구)
+      // gu 이름만으로는 Dash 쪽에서 어느 지역인지 구분할 수 없다. 코드로 못
+      // 구했으면(WMS 경로 등) "부산"으로 둔다 — 지금 실제 데이터가 있는 지역이
+      // 부산뿐이라 안전한 기본값이다.
+      var region = regionName || '부산';
+      var payload = JSON.stringify({ gu: guName, dong: dongName, region: region });
       try {
         window.parent.__lastGuClick = payload;
       } catch (e) {
@@ -618,7 +687,8 @@
       }
 
       // 향후 message 방식 리스너를 위해 postMessage도 함께 보낸다.
-      window.parent.postMessage({ type: 'dong_click', gu: guName, dong: dongName }, '*');
+      window.parent.postMessage(
+        { type: 'dong_click', gu: guName, dong: dongName, region: region }, '*');
     }
 
     /* ==================================================================
@@ -626,9 +696,20 @@
        ================================================================== */
 
     window.addEventListener('message', function (evt) {
-      if (evt.data && evt.data.type === 'unsold_data') {
+      if (!evt.data) return;
+      if (evt.data.type === 'unsold_data') {
         unsoldData = evt.data.data || {};
         refreshColors();
+      } else if (evt.data.type === 'move_to_region') {
+        // Dash 쪽 지역 선택 바(region-select/district-select)가 보낸다.
+        // currentSelection을 먼저 갱신해야 refreshColors()가 새 선택 기준으로
+        // 다시 칠한다 (guFillStyle이 이 값을 읽는다).
+        currentSelection = { region: evt.data.region, district: evt.data.district || null };
+        refreshColors();
+
+        // district가 있으면 "지역_구군" 키로, 없으면 지역명 단독으로 moveToRegion에 넘긴다.
+        var key = evt.data.district ? (evt.data.region + '_' + evt.data.district) : evt.data.region;
+        moveToRegion(key);
       }
     });
 
@@ -638,6 +719,65 @@
       if (!guLayer) return;
       guLayer.changed();
       showLegend(true);
+    }
+
+    /* ==================================================================
+       지역·구·군 이동 — Dash 쪽 지역 선택 바가 postMessage(move_to_region)로
+       호출한다(위 message 리스너 참고). 하드코딩된 좌표 대신 이미 로드된
+       LT_C_ADSIGG_INFO 피처의 실제 bbox로 이동한다(regionFeaturesByName,
+       buildGuLayer 참고). 구·군 경계·색칠 레이어는 REGION_BBOX 기준으로 이미
+       전체 지역이 로드돼 있으므로 이동 자체는 재요청 없이 기존 레이어 위에서
+       일어난다.
+       ================================================================== */
+
+    // key는 두 형태를 받는다:
+    //   "부산_중구"  — regionFeaturesByName의 개별 피처로 바로 이동 (구·군 선택 시)
+    //   "부산"       — 그 지역에 속한 모든 피처의 bbox를 합쳐서 이동 (구·군 미선택 시)
+    // regionFeaturesByName의 키는 항상 buildGuLayer에서 "{region}_{gu}" 형식으로만
+    // 채워진다 (region이나 gu가 빈 문자열이면 아예 채우지 않는다) — 아래 매칭 0건
+    // 로그가 찍힌다면 이 키가 실제로 그 형식이 아니거나, geometry가 아직 로드되지
+    // 않은 시점에 호출됐다는 뜻이다.
+    function moveToRegion(key) {
+      if (!olMap || !key) return;
+
+      var feature = regionFeaturesByName[key];
+      var extent = null;
+
+      if (feature) {
+        console.log('[vworld] moveToRegion: 구·군 단일 피처로 이동 — "' + key + '"');
+        extent = feature.getGeometry().getExtent();
+      } else {
+        var prefix = key + '_';
+        var matched = Object.keys(regionFeaturesByName).filter(function (k) {
+          return k.indexOf(prefix) === 0;   // k.startsWith(prefix)와 동일 (ES5 호환)
+        });
+        console.log('[vworld] moveToRegion: region "' + key + '" → prefix "' + prefix
+                   + '" 매칭 ' + matched.length + '건 (전체 등록 피처 '
+                   + Object.keys(regionFeaturesByName).length + '건)');
+
+        if (!matched.length) {
+          console.warn('[vworld] moveToRegion: "' + prefix + '"로 시작하는 '
+                      + 'regionFeaturesByName 키가 없습니다 — 지오메트리가 아직 '
+                      + '로드되지 않았거나(buildGuLayer 전) 키 형식이 어긋났을 수 '
+                      + '있습니다. 현재 키 목록:', Object.keys(regionFeaturesByName));
+          return;
+        }
+
+        matched.forEach(function (k) {
+          var e = regionFeaturesByName[k].getGeometry().getExtent();
+          extent = extent ? ol.extent.extend(extent, e) : e.slice();
+        });
+      }
+      if (!extent) return;
+
+      // fit()이 폴리곤 크기에 맞춰 줌까지 알아서 잡아 준다 — 부산 구(작음)와
+      // 경남 시·군(큼), 그리고 지역 전체(더 큼)마다 다른 줌을 손으로 정해 줄
+      // 필요가 없다.
+      olMap.getView().fit(extent, {
+        padding:  [40, 40, 40, 40],
+        maxZoom:  13,
+        duration: 500,
+      });
     }
 
     /* ------------------------------------------------------------------
