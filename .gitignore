@@ -8,3 +8,4 @@ data/*.sqlite3
 data/*.log
 data/*.json
 *.log
+dashboards/assets/geometry_cache/

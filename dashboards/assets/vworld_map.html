@@ -74,9 +74,11 @@
 
          (A) WMS 행정구역 레이어  — api.vworld.kr/req/wms, lt_c_adsigg /
              lt_c_ademd. 타일 이미지라서 CORS와 무관하게 무조건 뜬다.
-             경계선·라벨의 "보이는 밑그림"을 담당한다.
-         (B) 데이터 API           — api.vworld.kr/req/data,
-             LT_C_ADSIGG_INFO / LT_C_ADEMD_INFO. GeoJSON 지오메트리를 주므로
+             경계선·라벨의 "보이는 밑그림"을 담당한다. 이건 여전히 V-World를
+             브라우저에서 직접 호출한다(캐싱 대상 아님).
+         (B) 지오메트리 캐시       — /geometry/sigg, /geometry/emd
+             (dashboards/app.py). LT_C_ADSIGG_INFO / LT_C_ADEMD_INFO GeoJSON을
+             서버가 V-World에서 받아 파일로 캐싱해 둔 것을 그대로 내려준다.
              ol.layer.Vector로 올려 ① 구별 미분양 색칠 ② 동 단위 클릭 판정을
              담당한다.
 
@@ -86,25 +88,25 @@
        GetFeatureInfo를 왕복해야 한다.
 
        그래서 폴백을 3단으로 둔다.
-         1) 데이터 API 성공        → 벡터 클릭 + 색상 오버레이 + 범례
-         2) 데이터 API 실패        → WMS GetFeatureInfo로 이름만 얻어 클릭 유지,
+         1) 지오메트리 캐시 성공   → 벡터 클릭 + 색상 오버레이 + 범례
+         2) 지오메트리 캐시 실패   → WMS GetFeatureInfo로 이름만 얻어 클릭 유지,
                                      색상 오버레이·범례는 포기(범례 숨김)
          3) 둘 다 실패             → 지도만 표시, 클릭 무반응(콘솔에 경고)
 
-       데이터 API는 브라우저에서 CORS가 막힐 수 있다. fetch가 거부되면
-       같은 요청을 JSONP(callback=)로 한 번 더 시도한다.
+       (B)는 같은 origin(/geometry/...)에서 오므로 CORS·JSONP 폴백이 필요 없다
+       — V-World 데이터 API를 직접 호출하던 예전 버전에는 있었지만, 지금은
+       서버(app.py)가 그 호출과 페이지네이션·90일 캐싱을 대신 처리한다.
        ================================================================== */
 
     var VWORLD_KEY = '__VWORLD_API_KEY__';
 
-    var DATA_API = 'https://api.vworld.kr/req/data';
     var WMS_API  = 'https://api.vworld.kr/req/wms';
 
-    // WMS 레이어명은 소문자, 데이터 API는 대문자 _INFO 접미사다 (서로 다른 계열).
+    // WMS 레이어명은 소문자다 (데이터 API 쪽 대문자 _INFO 레이어명은 이제
+    // /geometry 캐시 라우트(app.py)가 알고 있으므로 여기선 필요 없다).
     var WMS_LAYERS   = 'lt_c_adsigg,lt_c_ademd';
     var WMS_DONG     = 'lt_c_ademd';
-    var DATA_SIGG    = 'LT_C_ADSIGG_INFO';
-    var DATA_EMD     = 'LT_C_ADEMD_INFO';
+    var DATA_SIGG    = 'LT_C_ADSIGG_INFO';   // addWMSBoundaryLayer 레이어명 인자로만 쓰인다
 
     // 최초 카메라 위치(부산 중심). 지오메트리가 아직 로드되지 않은 시점이라
     // bbox 기반 이동을 쓸 수 없어 고정값이 필요하다 — 로드가 끝나면 Dash 쪽
@@ -118,12 +120,10 @@
     // ("지역_구군")와 클릭 브리지에 실어 보내는 region 값의 출처이기도 하다.
     var SIDO_TO_REGION = { '26': '부산', '31': '울산', '48': '경남' };
 
-    // 데이터 API는 전국을 주므로 부산·울산·경남을 넉넉히 감싸는 BOX로 1차 필터하고,
-    // 그 밖의 시도가 걸려 들어오면 아래 isInRegion()에서 코드로 걷어낸다.
-    var REGION_BBOX = [127.6, 34.6, 129.5, 35.7];       // EPSG:4326
-
-    var PAGE_SIZE = 1000;      // 데이터 API 1회 최대치
-    var MAX_PAGES = 3;
+    // 데이터 API(구·군/읍면동 GeoJSON) 호출·페이지네이션·BOX 필터는 더 이상
+    // 여기서 하지 않는다 — dashboards/app.py의 /geometry/<type> 라우트가 V-World를
+    // 대신 불러 파일로 캐싱해 두고, 여기서는 그 캐시를 fetch만 한다(fetchGeometry
+    // 참고). 그래도 걸려 들어온 다른 시도는 여전히 isInRegion()에서 코드로 걷어낸다.
 
     /* ---------------- 상태 ---------------- */
     var unsoldData  = {};
@@ -274,14 +274,14 @@
     }
 
     /* ==================================================================
-       (B) 데이터 API → 벡터 레이어
+       (B) 캐시된 지오메트리(app.py의 /geometry/<type>) → 벡터 레이어
        ================================================================== */
 
     function loadAdminVectors() {
       // 구·군을 먼저 받아 guNameByCode를 채워 두면 동 피처의 구 이름을
       // 코드 앞 5자리로 역참조할 수 있다. 다만 full_nm 파싱으로도 구할 수
       // 있으므로 어느 한쪽이 실패해도 나머지는 살린다.
-      fetchAdmin(DATA_SIGG)
+      fetchGeometry('sigg')
         .then(function (features) {
           buildGuLayer(features);
         })
@@ -290,7 +290,7 @@
           showLegend(false);
         })
         .then(function () {
-          return fetchAdmin(DATA_EMD);
+          return fetchGeometry('emd');
         })
         .then(function (features) {
           buildDongLayer(features);
@@ -300,49 +300,29 @@
         });
     }
 
-    // 지정한 데이터셋의 대상 지역(부산·울산·경남) 피처를 전부(페이지를 넘겨가며) 모아 온다.
-    function fetchAdmin(dataName) {
-      var acc = [];
-
-      function nextPage(page) {
-        return requestPage(dataName, page).then(function (fc) {
+    // /geometry/<type>(type: 'sigg' 또는 'emd')에서 featureCollection을 받아
+    // 대상 지역(부산·울산·경남) 피처만 남긴다.
+    //
+    // 예전에는 이 파일이 V-World 데이터 API를 브라우저에서 직접 불러 페이지네이션
+    // (최대 3페이지)까지 처리하고, CORS가 막히면 JSONP로 재시도했다. 이제 그 전부
+    // (V-World 호출·페이지 합치기·90일 파일 캐싱)를 서버(app.py의
+    // serve_geometry_cache)가 대신하므로 여기서는 같은 origin(same-origin)으로
+    // 캐시 파일을 fetch 한 번만 하면 된다 — CORS도, JSONP 폴백도 필요 없다.
+    function fetchGeometry(type) {
+      return fetch('/geometry/' + type)
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(unwrapFeatureCollection)
+        .then(function (fc) {
           var read = readRegionFeatures(fc);
-          acc = acc.concat(read.features);
-          // 꽉 찬 페이지가 오면 뒤가 더 있을 수 있다.
-          if (read.rawCount >= PAGE_SIZE && page < MAX_PAGES) {
-            return nextPage(page + 1);
+          if (!read.features.length) {
+            throw new Error(type + ': 대상 지역 피처가 0건입니다');
           }
-          return acc;
+          console.log('[vworld] ' + type + ' 대상 지역 피처 ' + read.features.length + '건');
+          return read.features;
         });
-      }
-
-      return nextPage(1).then(function (features) {
-        if (!features.length) {
-          throw new Error(dataName + ': 대상 지역 피처가 0건입니다');
-        }
-        console.log('[vworld] ' + dataName + ' 대상 지역 피처 ' + features.length + '건');
-        return features;
-      });
-    }
-
-    function requestPage(dataName, page) {
-      var params = {
-        service:    'data',
-        request:    'GetFeature',
-        version:    '2.0',
-        key:        VWORLD_KEY,
-        domain:     currentDomain(),
-        data:       dataName,
-        format:     'json',
-        errorformat:'json',
-        size:       PAGE_SIZE,
-        page:       page,
-        geometry:   'true',
-        attribute:  'true',
-        crs:        'EPSG:4326',
-        geomFilter: 'BOX(' + REGION_BBOX.join(',') + ')',
-      };
-      return getJson(DATA_API, params).then(unwrapFeatureCollection);
     }
 
     function unwrapFeatureCollection(payload) {
@@ -355,68 +335,6 @@
       var fc = res.result && res.result.featureCollection;
       if (!fc || !fc.features) throw new Error('featureCollection이 비어 있습니다');
       return fc;
-    }
-
-    /* --- fetch(CORS) → JSONP 폴백 -------------------------------------- */
-
-    function buildUrl(base, params) {
-      var qs = Object.keys(params).map(function (k) {
-        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-      }).join('&');
-      return base + '?' + qs;
-    }
-
-    function getJson(base, params) {
-      return fetch(buildUrl(base, params))
-        .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        })
-        .catch(function (e) {
-          // CORS 거부는 TypeError로 떨어져 상태코드조차 못 본다.
-          // 스크립트 태그는 CORS를 타지 않으므로 JSONP로 한 번 더 시도한다.
-          console.warn('fetch 실패 — JSONP로 재시도합니다:', e.message);
-          return getJsonp(base, params);
-        });
-    }
-
-    var jsonpSeq = 0;
-
-    function getJsonp(base, params) {
-      return new Promise(function (resolve, reject) {
-        var cbName = '__vworldJsonp' + (++jsonpSeq);
-        var script = document.createElement('script');
-        var timer;
-
-        function cleanup() {
-          clearTimeout(timer);
-          try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
-          if (script.parentNode) script.parentNode.removeChild(script);
-        }
-
-        window[cbName] = function (data) {
-          cleanup();
-          resolve(data);
-        };
-
-        // callback을 지원하지 않으면 서버가 생 JSON을 돌려주고, 그건 스크립트로
-        // 실행될 수 없어 onerror 또는 타임아웃으로 떨어진다. 어느 쪽이든 reject.
-        var withCb = {};
-        Object.keys(params).forEach(function (k) { withCb[k] = params[k]; });
-        withCb.callback = cbName;
-
-        script.src = buildUrl(base, withCb);
-        script.onerror = function () {
-          cleanup();
-          reject(new Error('JSONP 로드 실패'));
-        };
-        timer = setTimeout(function () {
-          cleanup();
-          reject(new Error('JSONP 응답 시간 초과'));
-        }, 15000);
-
-        document.head.appendChild(script);
-      });
     }
 
     /* --- 속성 파싱 ------------------------------------------------------ */
@@ -436,13 +354,27 @@
       return '';
     }
 
+    // 시·군·구(기초자치단체) 토큰인지 판정한다. '시'로 끝나는 이름은 두 종류가
+    // 섞여 있다 — 시·도 이름(부산광역시·울산광역시·경상남도 등)과, 자치구가 없는
+    // 일반시(진주시·통영시·김해시 등). 시·도 접미사로 끝나면 제외하고 나머지 중
+    // 구/군/시로 끝나는 토큰만 인정한다.
+    // (경남 18개 시·군 중 진주·통영·사천·김해·밀양·거제·양산 7개 시는 자치구가
+    //  없어 '시'로 끝나는 이름 하나뿐이다 — 여기서 '시'를 인정하지 않으면 이
+    //  7개가 통째로 빠진다. 유일하게 자치구가 있는 창원시는 이 함수를 거치지
+    //  않는다 — V-World가 애초에 의창구/성산구/마산합포구/마산회원구/진해구
+    //  5개 구 레코드로 따로 준다.)
+    function isDistrictToken(token) {
+      if (/(광역시|특별자치시|특별시|특별자치도|도)$/.test(token)) return false;
+      return /[구군시]$/.test(token);
+    }
+
     // full_nm은 '부산광역시 중구 보수동'처럼 전체 경로로 온다.
-    // 구·군 토큰(…구 / …군)을 집어낸다.
+    // 시·군·구 토큰(…구 / …군 / …시)을 집어낸다.
     function guFromFullName(fullNm) {
       if (!fullNm) return '';
       var parts = String(fullNm).trim().split(/\s+/);
       for (var i = 0; i < parts.length; i++) {
-        if (/[구군]$/.test(parts[i])) return parts[i];
+        if (isDistrictToken(parts[i])) return parts[i];
       }
       return '';
     }
@@ -487,7 +419,7 @@
         var name = pick(props, NAME_KEYS) || lastToken(fullNm);
         var gu   = guFromFullName(fullNm)
                 || (code ? guNameByCode[code.slice(0, 5)] : '')
-                || (/[구군]$/.test(name) ? name : '');
+                || (isDistrictToken(name) ? name : '');
 
         f.set('__code',   code);
         f.set('__gu',     gu);
@@ -653,7 +585,7 @@
           var name   = pick(props, NAME_KEYS) || lastToken(fullNm);
           var gu     = guFromFullName(fullNm)
                     || (code ? guNameByCode[code.slice(0, 5)] : '')
-                    || (/[구군]$/.test(name) ? name : '');
+                    || (isDistrictToken(name) ? name : '');
           if (!gu) return;
           onDongClick(gu, (name && name !== gu) ? name : '', regionFromCode(code, fullNm));
         })
@@ -725,9 +657,9 @@
        지역·구·군 이동 — Dash 쪽 지역 선택 바가 postMessage(move_to_region)로
        호출한다(위 message 리스너 참고). 하드코딩된 좌표 대신 이미 로드된
        LT_C_ADSIGG_INFO 피처의 실제 bbox로 이동한다(regionFeaturesByName,
-       buildGuLayer 참고). 구·군 경계·색칠 레이어는 REGION_BBOX 기준으로 이미
-       전체 지역이 로드돼 있으므로 이동 자체는 재요청 없이 기존 레이어 위에서
-       일어난다.
+       buildGuLayer 참고). 구·군 경계·색칠 레이어는 /geometry/sigg 캐시로 이미
+       전체 지역(부산·울산·경남)이 로드돼 있으므로 이동 자체는 재요청 없이
+       기존 레이어 위에서 일어난다.
        ================================================================== */
 
     // key는 두 형태를 받는다:
@@ -742,6 +674,10 @@
 
       var feature = regionFeaturesByName[key];
       var extent = null;
+      // district(구·군)까지 선택된 단일 피처는 더 확대돼도 괜찮지만, region 전체를
+      // 합친 bbox는 부산·울산·경남처럼 넓은 지역에서 과도하게 확대되기 쉬워
+      // 더 낮은 상한을 둔다.
+      var fitMaxZoom = feature ? 13 : 11;
 
       if (feature) {
         console.log('[vworld] moveToRegion: 구·군 단일 피처로 이동 — "' + key + '"');
@@ -770,12 +706,14 @@
       }
       if (!extent) return;
 
-      // fit()이 폴리곤 크기에 맞춰 줌까지 알아서 잡아 준다 — 부산 구(작음)와
-      // 경남 시·군(큼), 그리고 지역 전체(더 큼)마다 다른 줌을 손으로 정해 줄
-      // 필요가 없다.
+      // fit()이 폴리곤 크기에 맞춰 줌을 알아서 잡아 주므로 부산 구(작음)와
+      // 경남 시·군(큼)마다 다른 줌을 손으로 정해 줄 필요는 없다. 다만 상한
+      // (maxZoom)은 필요하다 — 안 두면 아주 작은 구·군 하나로 region 전체를
+      // 대표하는 극단적인 경우 등에서 과도하게 확대될 수 있다. padding은 경계선이
+      // 프레임 끝에 딱 붙지 않도록 하는 여백이다.
       olMap.getView().fit(extent, {
         padding:  [40, 40, 40, 40],
-        maxZoom:  13,
+        maxZoom:  fitMaxZoom,
         duration: 500,
       });
     }

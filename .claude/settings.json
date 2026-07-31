@@ -78,7 +78,15 @@
       "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_final.js)",
       "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_last.js)",
       "Bash(python -m py_compile dashboards/app.py)",
-      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_bugfix.js)"
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_bugfix.js)",
+      "Bash(cd c:/Users/ksydr/estate-monitor)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_zoom.js)",
+      "Bash(echo OK)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_cache.js)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_final2.js)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat dashboards/app.py dashboards/assets/vworld_map.html .gitignore)",
+      "Bash(git -C c:/Users/ksydr/estate-monitor diff --stat README.md)",
+      "Bash(node --check /c/Users/ksydr/AppData/Local/Temp/claude/c--Users-ksydr-estate-monitor/c1736605-6bae-44b9-aa3a-652514c242a4/scratchpad/_vworld_gufix.js)"
     ]
   }
 }

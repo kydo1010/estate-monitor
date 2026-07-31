@@ -8,6 +8,7 @@ dashboards/app.py
 import json
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
@@ -779,6 +780,99 @@ def serve_vworld_map():
     content = html_path.read_text(encoding="utf-8")
     content = content.replace("__VWORLD_API_KEY__", VWORLD_API_KEY or "")
     return content, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# ---------------------------------------------------------------------------
+# 구·군/읍면동 지오메트리 캐시
+#
+# 행정구역 경계는 거의 안 바뀌는 데이터인데, vworld_map.html이 예전엔 매
+# 페이지 로드(iframe 재로드 포함)마다 V-World 데이터 API를 브라우저에서 직접
+# 호출했다. 서버가 최초 1회(또는 캐시 만료 시)만 받아 파일로 저장해 두고,
+# 이후 요청은 그 파일을 그대로 돌려준다 — V-World 호출 횟수가 줄고 로딩도
+# 즉시 끝난다. 응답 형식은 V-World 원본 featureCollection 래퍼 그대로라
+# vworld_map.html의 unwrapFeatureCollection()이 예전과 똑같이 파싱한다.
+# ---------------------------------------------------------------------------
+GEOMETRY_CACHE_DIR = Path(__file__).parent / "assets" / "geometry_cache"
+GEOMETRY_CACHE_DIR.mkdir(exist_ok=True)
+CACHE_MAX_AGE_DAYS = 90     # 행정구역 개편(드물지만 읍면동 통폐합 등)에 대비한 만료 정책
+GEOMETRY_PAGE_SIZE = 1000   # V-World 데이터 API 1회 최대치 — vworld_map.html의 예전 PAGE_SIZE와 동일
+GEOMETRY_MAX_PAGES = 3
+GEOMETRY_BBOX = "127.6,34.6,129.5,35.7"     # 부산·울산·경남 — vworld_map.html의 예전 REGION_BBOX와 동일
+GEOMETRY_LAYERS = {"sigg": "LT_C_ADSIGG_INFO", "emd": "LT_C_ADEMD_INFO"}
+
+
+def fetch_geometry_from_vworld(data_layer: str) -> dict:
+    """
+    V-World 데이터 API를 페이지네이션하며 모두 받아 하나의 featureCollection으로
+    합친다 (예전에 vworld_map.html의 fetchAdmin/requestPage가 브라우저에서 하던
+    일을 그대로 서버로 옮긴 것 — 꽉 찬 페이지가 오면 다음 페이지를 더 받는다).
+    """
+    all_features = []
+    for page in range(1, GEOMETRY_MAX_PAGES + 1):
+        params = {
+            "service": "data", "request": "GetFeature", "version": "2.0",
+            "key": VWORLD_API_KEY, "domain": "http://localhost:9090",
+            "data": data_layer, "format": "json", "errorformat": "json",
+            "size": GEOMETRY_PAGE_SIZE, "page": page,
+            "geometry": "true", "attribute": "true", "crs": "EPSG:4326",
+            "geomFilter": f"BOX({GEOMETRY_BBOX})",
+        }
+        resp = requests.get("https://api.vworld.kr/req/data", params=params, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        res = payload.get("response") or {}
+        if res.get("status") and res["status"] != "OK":
+            error = res.get("error") or {}
+            raise RuntimeError(
+                f"V-World 데이터 API 오류: {error.get('text') or error.get('code') or res['status']}"
+            )
+        page_features = ((res.get("result") or {}).get("featureCollection") or {}).get("features") or []
+        all_features.extend(page_features)
+        if len(page_features) < GEOMETRY_PAGE_SIZE:
+            break   # 꽉 찬 페이지가 아니면 다음 페이지가 없다
+
+    return {
+        "response": {
+            "status": "OK",
+            "result": {"featureCollection": {"type": "FeatureCollection", "features": all_features}},
+        }
+    }
+
+
+@app.server.route("/geometry/<data_type>")
+def serve_geometry_cache(data_type):
+    """
+    data_type: 'sigg'(구·군) 또는 'emd'(읍면동).
+    캐시 파일이 있고 CACHE_MAX_AGE_DAYS 이내면 그대로 반환한다. 없거나 만료됐으면
+    V-World에서 새로 받아와 캐시한 뒤 반환한다.
+    """
+    data_layer = GEOMETRY_LAYERS.get(data_type)
+    if not data_layer:
+        return json.dumps({"error": f"unknown data_type: {data_type}"}), 404, {"Content-Type": "application/json"}
+
+    cache_file = GEOMETRY_CACHE_DIR / f"{data_type}.json"
+    if cache_file.exists():
+        age_days = (time.time() - cache_file.stat().st_mtime) / 86400
+        if age_days < CACHE_MAX_AGE_DAYS:
+            return cache_file.read_text(encoding="utf-8"), 200, {"Content-Type": "application/json"}
+
+    try:
+        payload = fetch_geometry_from_vworld(data_layer)
+    except Exception as e:
+        if cache_file.exists():
+            # 갱신에 실패해도(예: V-World 503·한도초과) 만료된 캐시가 아예 없는
+            # 것보다는 낫다 — 행정구역 경계는 거의 안 바뀌므로 낡은 캐시로도 지도는
+            # 정상 동작한다.
+            logger.warning("geometry cache 갱신 실패(%s) — 만료된 캐시로 대체: %s", data_type, e)
+            return cache_file.read_text(encoding="utf-8"), 200, {"Content-Type": "application/json"}
+        logger.warning("geometry cache 생성 실패(%s), 캐시 없음: %s", data_type, e)
+        return json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}
+
+    body = json.dumps(payload, ensure_ascii=False)
+    cache_file.write_text(body, encoding="utf-8")
+    return body, 200, {"Content-Type": "application/json"}
+
 
 app.layout = html.Div([
     html.Div(id="page-content", children=build_shell()),
