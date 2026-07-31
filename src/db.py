@@ -161,18 +161,23 @@ def get_unsold_spike_districts(threshold_pct: float = 30.0) -> list[UnsoldHousin
 
 
 def get_avg_price_by_district(start_date: date, end_date: date) -> list[tuple]:
-    """기간 내 지역구별 평균 거래가 (히트맵/추이 차트용)"""
+    """기간 내 지역(region)·지역구별 평균 거래가 (히트맵/추이 차트용).
+
+    부산·울산 사이에 동명 구(중구·남구·동구·북구)가 있어 district만으로 group by
+    하면 두 지역 데이터가 섞인다 — region을 함께 묶어야 한다.
+    """
     from sqlalchemy import func
 
     with get_session() as session:
         return (
             session.query(
+                Trade.region,
                 Trade.district,
                 func.avg(Trade.deal_amount).label("avg_price"),
                 func.count(Trade.id).label("deal_count"),
             )
             .filter(Trade.deal_date.between(start_date, end_date))
-            .group_by(Trade.district)
+            .group_by(Trade.region, Trade.district)
             .all()
         )
 

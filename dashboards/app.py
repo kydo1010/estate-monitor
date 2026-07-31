@@ -181,7 +181,24 @@ def load_unsold_df():
 def load_price_df():
     end, start = date.today(), date.today() - timedelta(days=90)
     rows = get_avg_price_by_district(start, end)
-    return pd.DataFrame(rows, columns=["지역구", "평균거래가", "거래건수"])
+    df = pd.DataFrame(rows, columns=["region", "지역구", "평균거래가", "거래건수"])
+    if df.empty:
+        return df
+
+    # region이 nullable이던 확장 이전에 수집된 레거시 거래는 region=None으로
+    # 묶여 나온다. district명으로 역보정하고, 그래도 못 구하면 조용히 사라지지
+    # 않도록 "미상"으로 명시해 둔다 (지역 선택 필터에서 존재가 드러나야 한다).
+    missing = df["region"].isna()
+    n_missing = int(missing.sum())
+    if n_missing:
+        df.loc[missing, "region"] = df.loc[missing, "지역구"].map(DISTRICT_TO_REGION)
+        n_unresolved = int(df["region"].isna().sum())
+        df.loc[df["region"].isna(), "region"] = "미상"
+        logger.info(
+            "load_price_df: region 없는 %d행 중 %d행 역보정, %d행 '미상' 처리",
+            n_missing, n_missing - n_unresolved, n_unresolved,
+        )
+    return df
 
 # permit_df 정제 규칙.
 #
@@ -203,13 +220,16 @@ BUSAN_DISTRICT_NAMES = set(BUSAN_DISTRICT_CODES.values())
 # 부산만으로 좁혀 두면 안 된다 (_as_district 참고).
 ALL_DISTRICT_NAMES = set(ALL_DISTRICT_CODES.values())
 
-# 지역구명 → region 추정 맵. price_df·permit_df·trend_df는 Trade/BuildingPermit
-# 원본에 region 컬럼이 없거나(BuildingPermit) 집계 과정에서 region이 빠져
-# (get_avg_price_by_district가 district로만 group by) 있어, 상단 지역 선택 바로
-# 필터링하려면 지역구명에서 역으로 추정하는 수밖에 없다. unsold_df만 DB의
-# UnsoldHousing.region 컬럼을 그대로 쓴다 (_filter_by_selection 참고).
+# 지역구명 → region 추정 맵. permit_df·trend_df는 BuildingPermit/Trade 원본에
+# region 컬럼이 없거나(BuildingPermit) 집계 과정에서 region이 빠져 있어, 상단
+# 지역 선택 바로 필터링하려면 지역구명에서 역으로 추정하는 수밖에 없다.
+# unsold_df는 DB의 UnsoldHousing.region 컬럼을, price_df는 이제
+# get_avg_price_by_district가 Trade.region까지 group by에 포함하므로 그 컬럼을
+# 그대로 쓴다(_filter_by_selection 참고) — 다만 레거시 데이터의 None 보정에는
+# load_price_df()가 이 맵을 그대로 재사용한다.
 # 부산·울산 사이에 이름이 겹치는 구가 있다(중구·남구·동구·북구) — 울산 데이터가
-# 아직 이 두 테이블에 전혀 없으므로, 겹치는 이름은 마지막에 덮어쓰는 부산이 이긴다.
+# 아직 이 두 테이블(permit_df·trend_df)에 전혀 없으므로, 겹치는 이름은 마지막에
+# 덮어쓰는 부산이 이긴다.
 DISTRICT_TO_REGION = {
     **{name: "경남" for name in GYEONGNAM_DISTRICT_CODES.values()},
     **{name: "울산" for name in ULSAN_DISTRICT_CODES.values()},
@@ -356,9 +376,9 @@ def _filter_by_selection(df, sel, district_col="지역구"):
     """
     상단 지역 선택 바(selected-region-store)의 {"region","district"}에 맞춰 df를 좁힌다.
 
-    df에 'region' 컬럼이 있으면(unsold_df) 그대로 쓰고, 없으면(price_df·trend_df·
-    permit_df — Trade/BuildingPermit 원본에 region이 없거나 집계 중 소실됨)
-    DISTRICT_TO_REGION으로 지역구명에서 역추정한다.
+    df에 'region' 컬럼이 있으면(unsold_df, price_df) 그대로 쓰고, 없으면
+    (trend_df·permit_df — Trade/BuildingPermit 원본에 region이 없거나 집계 중
+    소실됨) DISTRICT_TO_REGION으로 지역구명에서 역추정한다.
     """
     if df.empty:
         return df
@@ -382,12 +402,12 @@ def build_tab_map(colors):
         data_banner(
             colors,
             f"미분양 현황 기준월 {base_month}",
-            "출처: 부산광역시 공동주택 미분양 현황 API",
+            "출처: 부산광역시 공동주택 미분양 현황 API · 경상남도 미분양현황 API",
             "매주 월요일 07:00 자동 갱신",
         ),
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
                  children=[
-                     kpi(colors, "부산 평균 거래가",
+                     kpi(colors, "전체 평균 거래가",
                          f"{int(price_df['평균거래가'].mean()):,}만원" if not price_df.empty else "-",
                          colors["accent"]),
                      kpi(colors, "급증 구·군", n_spike, colors["danger"], "미분양 30%↑"),
@@ -471,7 +491,7 @@ def build_tab_unsold(colors, df):
         data_banner(
             colors,
             f"미분양 현황 기준월 {base_month}",
-            "출처: 부산광역시 공동주택 미분양 현황 API",
+            "출처: 부산광역시 공동주택 미분양 현황 API · 경상남도 미분양현황 API",
             "매주 월요일 07:00 자동 갱신",
             spike_note,
         ),
@@ -757,7 +777,7 @@ def build_shell():
             # 푸터
             html.Div(style={"padding":"14px 32px","borderTop":f"1px solid {colors['border']}",
                             "marginTop":"24px","backgroundColor":colors["surface"]}, children=[
-                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API",
+                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API  ·  경상남도 미분양현황 API  ·  건축HUB 주택인허가 API",
                        style={"color":colors["muted"],"fontSize":"15px","margin":"0"}),
             ]),
         ]
@@ -1071,10 +1091,18 @@ def map_side_panel(click_data):
                              "marginTop":"60px","textAlign":"center"})
 
     u_row   = unsold_df[(unsold_df["지역구"] == gu_name) & (unsold_df["region"] == region_name)]
-    p_row   = price_df[price_df["지역구"] == gu_name]
+    p_row   = price_df[(price_df["지역구"] == gu_name) & (price_df["region"] == region_name)]
     # 인허가는 구 단위 유지 — building_permits에 동 정보가 없다.
-    pm_rows = permit_df[permit_df["지역구"] == gu_name].sort_values(
-        "인허가일", ascending=False).head(5).copy()
+    # permit_df엔 region 컬럼이 없다(건축HUB·청약홈 모두 부산 데이터만 수집 중이라
+    # load_permit_df가 BUSAN_DISTRICT_NAMES로 이미 걸러 둔 상태 — CLAUDE.md 참고).
+    # 그래서 지역구명만으로 필터링하면 부산·울산 동명 구(중구·남구·동구·북구)를 클릭했을
+    # 때 부산 데이터가 울산 패널에 잘못 붙는다 — DISTRICT_TO_REGION 역추정으로
+    # 막는다(_filter_by_selection과 동일한 임시방편. permit_df에 실제 데이터 출처가
+    # 부산 외 지역으로 넓어지면 load_permit_df에서 진짜 region 컬럼을 채워야 한다).
+    pm_rows = permit_df[
+        (permit_df["지역구"] == gu_name) &
+        (permit_df["지역구"].map(DISTRICT_TO_REGION) == region_name)
+    ].sort_values("인허가일", ascending=False).head(5).copy()
     pm_rows["인허가일"] = pm_rows["인허가일"].astype(str)
 
     unsold_count = int(u_row["미분양세대수"].values[0]) if not u_row.empty else "-"
