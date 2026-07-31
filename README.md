@@ -43,6 +43,10 @@ MOLIT_APARTMENT_API_KEY=      # 국토부 아파트 매매 실거래가
 MOLIT_APT_RIGHTS_API_KEY=     # 국토부 분양권전매 실거래가
 MOLIT_OFFICETEL_API_KEY=      # 국토부 오피스텔 매매 실거래가
 VWORLD_API_KEY=               # V-World 지도
+VWORLD_DOMAIN=                # V-World API 서버 사이드 호출 시 domain 파라미터. V-World 콘솔에
+                               # 등록한 도메인과 정확히 일치해야 함(포트 포함). 미설정 시
+                               # "http://localhost:9090" 기본값 사용. 서버 배포 시 실제 접속
+                               # 도메인(예: http://1.234.56.92:9090)으로 설정할 것.
 BUILDING_PERMIT_API_KEY=      # 건축HUB 주택인허가 (배치 수집 + 대시보드 내 실시간 검색)
 BUSAN_UNSOLD_API_KEY=         # 부산광역시 공동주택 미분양 현황
 GYEONGNAM_UNSOLD_API_KEY=     # 경상남도 미분양 현황

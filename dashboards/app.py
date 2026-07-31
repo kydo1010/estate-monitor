@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, dash_table, Input, Output, State, clientside_callback
 
 from src.config import (
-    UNSOLD_SPIKE_THRESHOLD_PCT, VWORLD_API_KEY,
+    UNSOLD_SPIKE_THRESHOLD_PCT, VWORLD_API_KEY, VWORLD_DOMAIN,
     BUSAN_DISTRICT_CODES, BUSAN_DONG_CODES,
     ULSAN_DISTRICT_CODES, GYEONGNAM_DISTRICT_CODES,
     ALL_DISTRICT_CODES,
@@ -357,7 +357,6 @@ price_df   = load_price_df()
 permit_df  = load_permit_df()
 trend_df   = load_trend_df()
 
-n_spike    = int(unsold_df["급증여부"].sum()) if not unsold_df.empty else 0
 updated_at = date.today().strftime("%Y-%m-%d")
 
 # 지도(iframe)의 구·군 색상용 {"region_구·군명": 미분양세대수} 딕셔너리.
@@ -403,6 +402,27 @@ def _filter_by_selection(df, sel, district_col="지역구"):
 # 탭별 레이아웃
 # ---------------------------------------------------------------------------
 
+def build_map_kpi_row(colors, unsold_df, price_df):
+    """
+    지도 탭 상단 KPI 3개(전체 평균 거래가/급증 구·군/미분양 최다).
+    render_map_kpi_section 콜백이 selected-region-store가 바뀔 때마다
+    _filter_by_selection으로 좁힌 unsold_df/price_df를 넘겨 다시 계산한다.
+    unsold_df가 비어 있으면(예: 미분양 수집기가 없는 울산 전체 선택) "-"로 표시한다.
+    """
+    n_spike_local = int(unsold_df["급증여부"].sum()) if not unsold_df.empty else 0
+    return html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
+             children=[
+                 kpi(colors, "전체 평균 거래가",
+                     fmt_won(price_df['평균거래가'].mean()) if not price_df.empty else "-",
+                     colors["accent"]),
+                 kpi(colors, "급증 구·군", n_spike_local, colors["danger"], "미분양 30%↑"),
+                 kpi(colors, "미분양 최다",
+                     unsold_df.iloc[0]["지역구"] if not unsold_df.empty else "-",
+                     colors["warning"],
+                     f"{int(unsold_df.iloc[0]['미분양세대수']):,}세대" if not unsold_df.empty else ""),
+             ])
+
+
 def build_tab_map(colors):
     CARD = get_card_style(colors)
 
@@ -415,17 +435,7 @@ def build_tab_map(colors):
             "출처: 부산광역시 공동주택 미분양 현황 API · 경상남도 미분양현황 API",
             "매주 월요일 07:00 자동 갱신",
         ),
-        html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
-                 children=[
-                     kpi(colors, "전체 평균 거래가",
-                         fmt_won(price_df['평균거래가'].mean()) if not price_df.empty else "-",
-                         colors["accent"]),
-                     kpi(colors, "급증 구·군", n_spike, colors["danger"], "미분양 30%↑"),
-                     kpi(colors, "미분양 최다",
-                         unsold_df.iloc[0]["지역구"] if not unsold_df.empty else "-",
-                         colors["warning"],
-                         f"{int(unsold_df.iloc[0]['미분양세대수']):,}세대" if not unsold_df.empty else ""),
-                 ]),
+        html.Div(id="map-kpi-row"),
         html.Div([
             html.Div(style=CARD, children=[
                 html.P("구·군을 클릭하면 상세 정보를 확인할 수 있습니다.",
@@ -846,7 +856,7 @@ def fetch_geometry_from_vworld(data_layer: str) -> dict:
     for page in range(1, GEOMETRY_MAX_PAGES + 1):
         params = {
             "service": "data", "request": "GetFeature", "version": "2.0",
-            "key": VWORLD_API_KEY, "domain": "http://localhost:9090",
+            "key": VWORLD_API_KEY, "domain": VWORLD_DOMAIN,
             "data": data_layer, "format": "json", "errorformat": "json",
             "size": GEOMETRY_PAGE_SIZE, "page": page,
             "geometry": "true", "attribute": "true", "crs": "EPSG:4326",
@@ -973,6 +983,13 @@ clientside_callback(
 
 def _section_children(title, content):
     return [html.H2(title, style=SECTION_TITLE_STYLE), content]
+
+
+@app.callback(Output("map-kpi-row", "children"), Input("selected-region-store", "data"))
+def render_map_kpi_section(sel):
+    udf = _filter_by_selection(unsold_df, sel)
+    pdf = _filter_by_selection(price_df, sel)
+    return build_map_kpi_row(LIGHT_COLORS, udf, pdf)
 
 
 @app.callback(Output("unsold-section", "children"), Input("selected-region-store", "data"))

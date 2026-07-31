@@ -21,6 +21,9 @@ MOLIT_OFFICETEL_API_KEY  = os.getenv("MOLIT_OFFICETEL_API_KEY")   # 오피스텔
 
 # V-World (지도·공시지가·토지이용계획 공통 키)
 VWORLD_API_KEY           = os.getenv("VWORLD_API_KEY")
+# V-World 서버 사이드 API 호출 시 실리는 domain 파라미터. V-World 콘솔에 등록된 도메인과
+# 정확히 일치해야 하며, 배포 환경(로컬/서버)마다 다르므로 .env에서 설정한다.
+VWORLD_DOMAIN            = os.getenv("VWORLD_DOMAIN", "http://localhost:9090")
 
 # 건축인허가
 BUILDING_PERMIT_API_KEY  = os.getenv("BUILDING_PERMIT_API_KEY")
