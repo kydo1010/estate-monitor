@@ -132,6 +132,16 @@ def fmt_period(series) -> str:
     return f"{fmt_date(series.min())} ~ {fmt_date(series.max())}"
 
 
+def fmt_won(value_manwon) -> str:
+    """
+    DB/DataFrame에 만원 단위로 저장된 금액(Trade.deal_amount 등)을 원 단위
+    콤마 표기로 바꾼다. 예: 233 → "2,330,000원". None/NaN이면 '-'.
+    """
+    if value_manwon is None or (isinstance(value_manwon, float) and pd.isna(value_manwon)):
+        return "-"
+    return f"{round(value_manwon * 10000):,.0f}원"
+
+
 def data_banner(colors, title, *lines):
     """
     탭 콘텐츠 최상단의 데이터 출처·기간 배너.
@@ -408,7 +418,7 @@ def build_tab_map(colors):
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"16px","flexWrap":"wrap"},
                  children=[
                      kpi(colors, "전체 평균 거래가",
-                         f"{int(price_df['평균거래가'].mean()):,}만원" if not price_df.empty else "-",
+                         fmt_won(price_df['평균거래가'].mean()) if not price_df.empty else "-",
                          colors["accent"]),
                      kpi(colors, "급증 구·군", n_spike, colors["danger"], "미분양 30%↑"),
                      kpi(colors, "미분양 최다",
@@ -536,7 +546,7 @@ def build_tab_price(colors, df, tdf, region_label="전체"):
         x=bar_df["평균거래가"], y=bar_df["지역구"], orientation="h",
         marker=dict(color=bar_df["평균거래가"],
                     colorscale=[[0,colors["accent2"]],[1,colors["accent"]]]),
-        text=bar_df["평균거래가"].apply(lambda x: f"{x:,.0f}만"),
+        text=bar_df["평균거래가"].apply(fmt_won),
         textposition="outside", textfont=dict(color=colors["text"], size=14),
     ))
     fig_bar.update_layout(**PT, title="구·군별 평균 거래가 (최근 3개월)", height=560,
@@ -550,11 +560,16 @@ def build_tab_price(colors, df, tdf, region_label="전체"):
         # 연도가 넘어가면 깨진다. Period로 바꿔 정렬한 뒤 문자열로 되돌린다.
         m = m.assign(_p=pd.PeriodIndex(m["월"], freq="M")).sort_values("_p")
         months = m["월"].tolist()
+        # hovertemplate은 파이썬 함수를 직접 호출할 수 없어, fmt_won으로 미리
+        # 만들어 둔 표시용 문자열을 customdata로 실어 보낸다.
+        m = m.assign(거래금액_표시=m["거래금액"].apply(fmt_won))
         fig_t.add_trace(go.Scatter(
             x=m["월"], y=m["거래금액"], mode="lines+markers",
             line=dict(color=colors["accent"], width=2),
             marker=dict(size=12, color=colors["accent"]),
             fill="tozeroy", fillcolor=_hex_to_rgba(colors["accent"], 0.08),
+            customdata=m["거래금액_표시"],
+            hovertemplate="%{x}<br>%{customdata}<extra></extra>",
         ))
     fig_t.update_layout(
         **PT, title=f"{region_label} 월별 평균 거래가 추이", height=260,
@@ -569,7 +584,7 @@ def build_tab_price(colors, df, tdf, region_label="전체"):
     return html.Div([
         banner,
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"24px","flexWrap":"wrap"},
-                 children=[kpi(colors, f"{region_label} 평균", f"{avg_all:,}만원", colors["accent"]),
+                 children=[kpi(colors, f"{region_label} 평균", fmt_won(avg_all), colors["accent"]),
                             kpi(colors, "최고가 지역구", top_gu),
                             kpi(colors, "총 거래건수", f"{total_d:,}건", colors["accent2"], "최근 3개월")]),
         dcc.Graph(figure=fig_t),
@@ -1114,11 +1129,11 @@ def map_side_panel(click_data):
     # 그 사실을 반드시 화면에 적는다 — 안 적으면 구 평균이 동 시세로 읽힌다.
     dong_trades = load_dong_trades(gu_name, dong_name) if dong_name else pd.DataFrame()
     if not dong_trades.empty:
-        price_value = f"{int(dong_trades['거래금액'].mean()):,}만원"
+        price_value = fmt_won(dong_trades['거래금액'].mean())
         price_sub   = f"{dong_name} 기준 · {len(dong_trades)}건"
         price_note  = None
     else:
-        price_value = f"{gu_avg_price:,}만원" if gu_avg_price else "-"
+        price_value = fmt_won(gu_avg_price) if gu_avg_price else "-"
         price_sub   = f"{gu_name} 전체 평균"
         price_note  = (f"※ {dong_name} 실거래 없음 — 구 평균으로 대체"
                        if dong_name else None)
@@ -1150,25 +1165,34 @@ def map_side_panel(click_data):
                            colors["danger"] if spike else colors["ok"], 0.08),
                        "padding":"3px 10px","borderRadius":"12px"}),
         ]),
-        html.P("미분양 현황", style={"color":colors["muted"],"fontSize":"15px",
-                                    "letterSpacing":"0.1em","margin":"0 0 4px",
-                                    "textTransform":"uppercase"}),
-        html.Div(style={**CARD,"marginBottom":"14px","padding":"12px 16px"}, children=[
-            stat_row("미분양 세대수", f"{unsold_count}세대"),
-            stat_row("전월 대비",
-                     f"{change_rate:+.1f}%" if change_rate is not None else "-",
-                     colors["danger"] if spike else colors["ok"]),
-            # 미분양은 구 단위로만 집계돼 들어온다. 동을 눌러도 이 숫자는
-            # 구 전체 값이므로 그렇게 밝혀 둔다.
-            note("※ 구 전체 기준"),
-        ]),
-        html.P("실거래가", style={"color":colors["muted"],"fontSize":"15px",
-                                  "letterSpacing":"0.1em","margin":"0 0 4px",
-                                  "textTransform":"uppercase"}),
-        html.Div(style={**CARD,"marginBottom":"14px","padding":"12px 16px"}, children=[
-            stat_row("최근 3개월 평균", price_value, colors["accent"]),
-            stat_row("집계 범위", price_sub),
-            *([note(price_note)] if price_note else []),
+        # 실거래가(왼쪽) · 미분양 현황(오른쪽) 2컬럼. 컬럼 하나당 제목 P + CARD를
+        # 통째로 묶어 flex 아이템으로 둔다 — minWidth를 둬서 사이드패널처럼 좁은
+        # 폭에서도 두 컬럼이 과도하게 찌그러지지 않게 한다.
+        html.Div(style={"display":"flex","gap":"16px","marginBottom":"14px","flexWrap":"wrap"}, children=[
+            html.Div(style={"flex":"1","minWidth":"220px"}, children=[
+                html.P("실거래가", style={"color":colors["muted"],"fontSize":"15px",
+                                          "letterSpacing":"0.1em","margin":"0 0 4px",
+                                          "textTransform":"uppercase"}),
+                html.Div(style={**CARD,"padding":"12px 16px"}, children=[
+                    stat_row("최근 3개월 평균", price_value, colors["accent"]),
+                    stat_row("집계 범위", price_sub),
+                    *([note(price_note)] if price_note else []),
+                ]),
+            ]),
+            html.Div(style={"flex":"1","minWidth":"220px"}, children=[
+                html.P("미분양 현황", style={"color":colors["muted"],"fontSize":"15px",
+                                            "letterSpacing":"0.1em","margin":"0 0 4px",
+                                            "textTransform":"uppercase"}),
+                html.Div(style={**CARD,"padding":"12px 16px"}, children=[
+                    stat_row("미분양 세대수", f"{unsold_count}세대"),
+                    stat_row("전월 대비",
+                             f"{change_rate:+.1f}%" if change_rate is not None else "-",
+                             colors["danger"] if spike else colors["ok"]),
+                    # 미분양은 구 단위로만 집계돼 들어온다. 동을 눌러도 이 숫자는
+                    # 구 전체 값이므로 그렇게 밝혀 둔다.
+                    note("※ 구 전체 기준"),
+                ]),
+            ]),
         ]),
         html.P("최근 인허가", style={"color":colors["muted"],"fontSize":"15px",
                                      "letterSpacing":"0.1em","margin":"0 0 8px",
