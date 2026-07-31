@@ -13,6 +13,7 @@ DB 연결, 스키마 정의, 데이터 저장/조회 헬퍼 함수
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from datetime import date, datetime
 
@@ -67,7 +68,7 @@ class Trade(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "district", "complex_name", "deal_date", "deal_amount", "area_m2",
+            "district", "complex_name", "deal_date", "deal_amount", "area_m2", "region",
             name="uq_trade_dedup",
         ),
     )
@@ -117,13 +118,82 @@ class BuildingPermit(Base):
 # 초기화 / 세션 헬퍼
 # ---------------------------------------------------------------------------
 
+TRADES_LEGACY_TABLE = "trades_pre_region_uq"
+
+
+def _trades_unique_constraint_has_region() -> bool | None:
+    """
+    trades 테이블의 uq_trade_dedup UNIQUE 제약에 region이 포함돼 있는지 확인.
+    테이블이 아직 없으면 None(마이그레이션 불필요 — 아래 create_all이 최신
+    모델 그대로 새로 만든다).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'"
+        )).fetchone()
+    if row is None or row[0] is None:
+        return None
+    match = re.search(r"uq_trade_dedup\s+UNIQUE\s*\(([^)]*)\)", row[0], re.IGNORECASE)
+    if not match:
+        return False
+    columns = [c.strip() for c in match.group(1).split(",")]
+    return "region" in columns
+
+
+def _migrate_trades_add_region_to_constraint() -> None:
+    """
+    SQLite는 ALTER TABLE로 기존 UNIQUE 제약을 바꿀 수 없어, rename → 현재
+    모델대로 재생성 → 데이터 복사 → 옛 테이블 drop 순서로 우회한다.
+
+    기존 행은 region이 전부 NULL인 채로 그대로 복사되는데, SQLite UNIQUE
+    비교에서 NULL은 서로 다른 값으로 취급되어(NULL != NULL) 복사 도중
+    제약 위반이 나지 않는다 — 실제로 이 함수 호출 전 데이터에 이미
+    (district, complex_name, deal_date, deal_amount, area_m2) 기준 중복이
+    없었으므로(region을 더한 새 제약은 그 초과집합이라) 위반이 생길 수 없다.
+    """
+    with engine.begin() as conn:
+        # ALTER TABLE RENAME은 named index(ix_trades_district 등)의 이름을
+        # 새 테이블로 넘겨주지 않고 옛 테이블에 그대로 남긴다 — 이 상태로
+        # Trade.__table__.create()를 부르면 새 trades에 같은 이름의 인덱스를
+        # 또 만들려다 "index already exists"로 충돌한다. rename 전에 지워
+        # 두면 새 trades에서 Trade.__table__.create()가 다시 만들어 준다.
+        idx_rows = conn.execute(text("PRAGMA index_list('trades')")).fetchall()
+        for idx in idx_rows:
+            idx_name = idx[1]
+            if not idx_name.startswith("sqlite_autoindex_"):
+                conn.execute(text(f"DROP INDEX IF EXISTS {idx_name}"))
+        conn.execute(text(f"ALTER TABLE trades RENAME TO {TRADES_LEGACY_TABLE}"))
+
+    Trade.__table__.create(bind=engine, checkfirst=True)
+
+    cols = ("id, region, district, dong, complex_name, property_type, "
+            "deal_amount, area_m2, floor, build_year, deal_date, created_at")
+    with engine.begin() as conn:
+        conn.execute(text(f"INSERT INTO trades ({cols}) SELECT {cols} FROM {TRADES_LEGACY_TABLE}"))
+        conn.execute(text(f"DROP TABLE {TRADES_LEGACY_TABLE}"))
+
+
 def init_db() -> None:
     """테이블이 없으면 생성. main.py나 최초 실행 시 1회 호출."""
+    inspector = inspect(engine)
+
+    # region 컬럼 자체가 없던 옛 trades 스키마 대응 — 제약 마이그레이션 전에
+    # 먼저 컬럼을 채워 둔다(없으면 아래 데이터 복사 시 "no such column" 오류).
+    if "trades" in inspector.get_table_names():
+        existing_cols = [c["name"] for c in inspector.get_columns("trades")]
+        if "region" not in existing_cols:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN region VARCHAR(10)"))
+                conn.commit()
+
+    if _trades_unique_constraint_has_region() is False:
+        _migrate_trades_add_region_to_constraint()
+
     Base.metadata.create_all(bind=engine)
 
     # region 컬럼 없는 기존 DB 대응 — ALTER TABLE로 추가
     inspector = inspect(engine)
-    for table, col in [("unsold_housing", "region"), ("trades", "region")]:
+    for table, col in [("unsold_housing", "region")]:
         existing = [c["name"] for c in inspector.get_columns(table)]
         if col not in existing:
             with engine.connect() as conn:

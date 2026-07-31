@@ -58,6 +58,7 @@ class AptRightsTradeCollector(MolitBaseCollector):
                 deal_date=r["deal_date"],
                 deal_amount=r["deal_amount"],
                 area_m2=r["area_m2"],
+                region=r["region"],
             ).first()
             if not exists:
                 session.add(Trade(**r))
