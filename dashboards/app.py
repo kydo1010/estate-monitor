@@ -21,7 +21,8 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, clientside_c
 from src.config import (
     UNSOLD_SPIKE_THRESHOLD_PCT, VWORLD_API_KEY, VWORLD_DOMAIN,
     BUSAN_DISTRICT_CODES, BUSAN_DONG_CODES,
-    ULSAN_DISTRICT_CODES, GYEONGNAM_DISTRICT_CODES,
+    ULSAN_DISTRICT_CODES, ULSAN_DONG_CODES,
+    GYEONGNAM_DISTRICT_CODES, GYEONGNAM_DONG_CODES,
     ALL_DISTRICT_CODES,
 )
 from src.db import (
@@ -661,7 +662,17 @@ def build_tab_permit(colors, df):
                      children=[
                 dcc.Dropdown(
                     id="permit-search-gu",
-                    options=[{"label": v, "value": k} for k, v in BUSAN_DISTRICT_CODES.items()],
+                    # 부산·울산 사이에 이름이 겹치는 구(중구·남구·동구·북구)가 있어
+                    # region을 라벨에 붙여 구분한다. DISTRICT_TO_REGION은 이름 기준이라
+                    # 겹치는 이름은 마지막에 덮어쓴 부산이 이겨버려 여기엔 못 쓴다 —
+                    # sigunguCd 자체는 겹치지 않으므로 코드 소속으로 직접 판별한다.
+                    options=[
+                        {
+                            "label": f"{'부산' if k in BUSAN_DISTRICT_CODES else '울산' if k in ULSAN_DISTRICT_CODES else '경남'} {v}",
+                            "value": k,
+                        }
+                        for k, v in ALL_DISTRICT_CODES.items()
+                    ],
                     placeholder="구·군 선택",
                     style={"width":"160px","fontSize":"18px", "color": "#000000"},
                     clearable=False,
@@ -1239,7 +1250,14 @@ def map_side_panel(click_data):
 def update_dong_options(sgg_cd):
     if not sgg_cd:
         return []
-    dongs = BUSAN_DONG_CODES.get(sgg_cd, {})
+    if sgg_cd.startswith("26"):
+        dongs = BUSAN_DONG_CODES.get(sgg_cd, {})
+    elif sgg_cd.startswith("31"):
+        dongs = ULSAN_DONG_CODES.get(sgg_cd, {})
+    elif sgg_cd.startswith("48"):
+        dongs = GYEONGNAM_DONG_CODES.get(sgg_cd, {})
+    else:
+        dongs = {}
     return [{"label": v, "value": k} for k, v in dongs.items()]
 
 
