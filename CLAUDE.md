@@ -141,6 +141,13 @@ python -m src.scheduler
 - **미분양 `base_month`는 API의 `reference_date`가 아니라 실행 시점의 `date.today()`다.**
   증감률은 "직전 달에 이 수집기가 실행됐고 그 행이 DB에 있을 때"만 계산되며, 없으면 `None`이라
   급증 알림에서 조용히 빠진다. 과거 데이터를 소급 적재할 수 없는 구조.
+- **미분양은 사실상 부산만 지원된다.** 울산은 수집기 자체가 없고, 경남(`gyeongnam_unsold.py`)은
+  스케줄러가 매주 계속 호출은 하지만 정부 API 백엔드가 `SERVICETIMEOUT_ERROR`로 항상 실패해
+  실제로 쌓이는 데이터가 없다 — 원인이 이 서버가 아니라 정부 쪽 인프라라 재수집을 더 이상
+  추적/시도하지 않기로 했다(코드는 그대로 두되 방치). `dashboards/app.py`의
+  `build_tab_unsold()`는 `region_label != "부산"`이면 빈 KPI 대신
+  `UNSOLD_UNSUPPORTED_REGION_MSG` 안내 문구를 보여준다 — 이 지역들에서 미분양 데이터가
+  안 보이는 건 버그가 아니라 이 상태를 반영한 것이다.
 - 국토부 API 응답은 XML이며 필드가 비어있거나 숫자가 아닐 수 있음 — `MolitBaseCollector._int`/
   `_float`/`_text`가 안전 파싱을 처리하므로 새 파서를 만들 때도 이 헬퍼를 재사용.
 - `src/db.py`의 `DB_PATH`는 상대경로(`data/estate_monitor.db`)라 저장소 루트가 아닌 cwd에서

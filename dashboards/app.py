@@ -456,7 +456,7 @@ def build_tab_map(colors):
         data_banner(
             colors,
             f"미분양 현황 기준월 {base_month}",
-            "출처: 부산광역시 공동주택 미분양 현황 API · 경상남도 미분양현황 API",
+            "출처: 부산광역시 공동주택 미분양 현황 API (부산만 제공 — 경남 API는 백엔드 장애로 보류)",
             "매주 월요일 07:00 자동 갱신",
         ),
         html.Div(id="map-kpi-row"),
@@ -524,15 +524,42 @@ def build_tab_map(colors):
     ])
 
 
-def build_tab_unsold(colors, df):
+UNSOLD_UNSUPPORTED_REGION_MSG = (
+    "미분양 현황은 현재 부산만 제공됩니다 — 울산·경남 미분양 API는 "
+    "연동돼 있지 않습니다(경남은 정부 API 백엔드 장애로 보류 중)."
+)
+
+
+def build_tab_unsold(colors, df, region_label="부산"):
     CARD = get_card_style(colors)
     TABLE_STYLE = get_table_style(colors)
     PT = get_plotly_template(colors)
 
+    if df.empty:
+        # 부산 외 지역은 애초에 수집기가 없어 데이터가 없는 것이지 "조회 결과가
+        # 0건"이 아니다 — 막대그래프·KPI를 전부 0으로 그리면 "정상"으로 오해할
+        # 수 있어, 그 대신 명확한 안내 문구로 대체한다.
+        message = UNSOLD_UNSUPPORTED_REGION_MSG if region_label != "부산" else "데이터 없음"
+        return html.Div([
+            data_banner(
+                colors, "미분양 현황",
+                "출처: 부산광역시 공동주택 미분양 현황 API",
+                "매주 월요일 07:00 자동 갱신",
+            ),
+            html.P(message, style={"color":colors["muted"], "fontSize":"18px", "margin":"32px 0"}),
+        ])
+
     spike_df = df[df["급증여부"]].copy()
     n_spike_local = len(spike_df)
     n_total = len(df)
-    region_label = df["region"].iloc[0] if not df.empty else ""
+    # change_rate가 None인 행은 "증감률 0% 미만이라 정상"이 아니라 "전월 비교
+    # 데이터 자체가 없어 판정을 못 한 것"이다 — 이 둘을 하나로 뭉쳐 "정상
+    # 지역"이라고 부르면 실제로는 아직 아무 판정도 안 된 지역이 안전하다고
+    # 오해하게 만든다. 판정 가능(급증 아님이 확인됨)/판정 대기를 나눈다.
+    pending_df = df[df["증감률"].isna()]
+    normal_df  = df[(~df["급증여부"]) & df["증감률"].notna()]
+    n_pending = len(pending_df)
+    n_normal  = len(normal_df)
 
     bar_df = df.sort_values("미분양세대수", ascending=True)
     fig = go.Figure(go.Bar(
@@ -559,7 +586,7 @@ def build_tab_unsold(colors, df):
         data_banner(
             colors,
             f"미분양 현황 기준월 {base_month}",
-            "출처: 부산광역시 공동주택 미분양 현황 API · 경상남도 미분양현황 API",
+            "출처: 부산광역시 공동주택 미분양 현황 API",
             "매주 월요일 07:00 자동 갱신",
             spike_note,
         ),
@@ -568,7 +595,8 @@ def build_tab_unsold(colors, df):
                                 sub=f"{region_label} {n_total}개 구·군" if region_label else "데이터 없음"),
                             kpi(colors, "급증 타깃", n_spike_local, colors["danger"],
                                 f"전월 대비 {UNSOLD_SPIKE_THRESHOLD_PCT:.0f}%↑"),
-                            kpi(colors, "정상 지역", n_total - n_spike_local, colors["ok"])]),
+                            kpi(colors, "정상", n_normal, colors["ok"], "급증 아님 확인됨"),
+                            kpi(colors, "판정 대기", n_pending, colors["muted"], "전월 비교 데이터 없음")]),
         html.Div(style={**CARD,"marginBottom":"24px","borderLeft":f"3px solid {colors['danger']}"}, children=[
             html.P("⚠  영업 우선 타깃 — 시공사 교체 또는 분양 전략 변경 가능성 높음",
                    style={"color":colors["danger"],"fontWeight":"600","margin":"0 0 16px","fontSize":"18px"}),
@@ -865,7 +893,7 @@ def build_shell():
             # 푸터
             html.Div(style={"padding":"14px 32px","borderTop":f"1px solid {colors['border']}",
                             "marginTop":"24px","backgroundColor":colors["surface"]}, children=[
-                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API  ·  경상남도 미분양현황 API  ·  건축HUB 주택인허가 API",
+                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API(부산만 제공)  ·  건축HUB 주택인허가 API",
                        style={"color":colors["muted"],"fontSize":"15px","margin":"0"}),
             ]),
         ]
@@ -1064,7 +1092,7 @@ def render_map_kpi_section(sel):
 @app.callback(Output("unsold-section", "children"), Input("selected-region-store", "data"))
 def render_unsold_section(sel):
     df = _filter_by_selection(unsold_df, sel)
-    return _section_children("🔔 미분양 알림", build_tab_unsold(LIGHT_COLORS, df))
+    return _section_children("🔔 미분양 알림", build_tab_unsold(LIGHT_COLORS, df, region_label=sel["region"]))
 
 
 @app.callback(Output("price-section", "children"), Input("selected-region-store", "data"))
