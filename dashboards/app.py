@@ -187,6 +187,21 @@ def load_unsold_df():
         # "데이터 없음"으로 처리되게 한다.
         if df.empty:
             return pd.DataFrame(columns=UNSOLD_DF_COLUMNS)
+
+        # region 컬럼이 nullable=False로 선언되기 전에 적재된 레거시 행은 region=None으로
+        # 남아 있다 (load_price_df의 legacy Trade 케이스와 동일). None인 채로 두면
+        # _filter_by_selection의 df["region"] == "부산" 비교가 항상 False가 되어
+        # 미분양 알림 섹션이 어떤 지역을 선택해도 계속 빈 상태로 보인다.
+        missing = df["region"].isna()
+        n_missing = int(missing.sum())
+        if n_missing:
+            df.loc[missing, "region"] = df.loc[missing, "지역구"].map(DISTRICT_TO_REGION)
+            n_unresolved = int(df["region"].isna().sum())
+            df.loc[df["region"].isna(), "region"] = "미상"
+            logger.info(
+                "load_unsold_df: region 없는 %d행 중 %d행 역보정, %d행 '미상' 처리",
+                n_missing, n_missing - n_unresolved, n_unresolved,
+            )
         return df
 
 def load_price_df():
@@ -223,37 +238,31 @@ PERMIT_ADDRESS_MARKERS = ("부산광역시", "경상남도", "블록")
 # 2020년 이전 인허가 건은 극소수인데 x축을 20년으로 늘려 최근 추세를 눌러버린다.
 PERMIT_MIN_DATE = pd.Timestamp("2020-01-01")
 
-# 지역구는 반드시 config의 매핑을 거친다. "부산"처럼 구·군이 아닌 값이 섞여
-# 들어와 구별 집계 어디에도 잡히지 않는 사례가 있었다.
-BUSAN_DISTRICT_NAMES = set(BUSAN_DISTRICT_CODES.values())
-
 # 부산·울산·경남 전체 시·군·구명. 지도가 이제 세 지역을 모두 다루므로 클릭 검증도
 # 부산만으로 좁혀 두면 안 된다 (_as_district 참고).
 ALL_DISTRICT_NAMES = set(ALL_DISTRICT_CODES.values())
 
-# 지역구명 → region 추정 맵. permit_df·trend_df는 BuildingPermit/Trade 원본에
-# region 컬럼이 없거나(BuildingPermit) 집계 과정에서 region이 빠져 있어, 상단
-# 지역 선택 바로 필터링하려면 지역구명에서 역으로 추정하는 수밖에 없다.
-# unsold_df는 DB의 UnsoldHousing.region 컬럼을, price_df는 이제
-# get_avg_price_by_district가 Trade.region까지 group by에 포함하므로 그 컬럼을
-# 그대로 쓴다(_filter_by_selection 참고) — 다만 레거시 데이터의 None 보정에는
-# load_price_df()가 이 맵을 그대로 재사용한다.
-# 부산·울산 사이에 이름이 겹치는 구가 있다(중구·남구·동구·북구) — 울산 데이터가
-# 아직 이 두 테이블(permit_df·trend_df)에 전혀 없으므로, 겹치는 이름은 마지막에
-# 덮어쓰는 부산이 이긴다.
+# 지역구명 → region 추정 맵. trend_df는 load_trend_df()가 Trade.region을 아예
+# select하지 않아(집계용 df라 원본에 region이 있어도 컬럼을 안 가져옴) 상단 지역
+# 선택 바로 필터링하려면 지역구명에서 역으로 추정하는 수밖에 없다. unsold_df는 DB의
+# UnsoldHousing.region 컬럼을, price_df는 get_avg_price_by_district가 Trade.region까지
+# group by에 포함하므로, permit_df는 BuildingPermit.region 컬럼을 그대로 쓴다
+# (_filter_by_selection 참고) — 다만 price_df는 레거시 데이터의 None 보정에 이 맵을
+# 재사용한다. 부산·울산 사이에 이름이 겹치는 구가 있다(중구·남구·동구·북구) — 울산
+# 데이터가 아직 trend_df에 전혀 없으므로, 겹치는 이름은 마지막에 덮어쓰는 부산이 이긴다.
 DISTRICT_TO_REGION = {
     **{name: "경남" for name in GYEONGNAM_DISTRICT_CODES.values()},
     **{name: "울산" for name in ULSAN_DISTRICT_CODES.values()},
     **{name: "부산" for name in BUSAN_DISTRICT_CODES.values()},
 }
 
-PERMIT_DF_COLUMNS = ["지역구", "인허가일", "세대수", "시행사", "시공사"]
+PERMIT_DF_COLUMNS = ["region", "지역구", "인허가일", "세대수", "시행사", "시공사"]
 
 
 def load_permit_df():
     with get_session() as s:
         rows = s.query(BuildingPermit).all()
-        df = pd.DataFrame([{"지역구": r.district, "인허가일": r.permit_date,
+        df = pd.DataFrame([{"region": r.region, "지역구": r.district, "인허가일": r.permit_date,
                             "세대수": r.household_count, "시행사": r.developer,
                             "시공사": r.contractor} for r in rows])
     if df.empty:
@@ -261,8 +270,11 @@ def load_permit_df():
 
     n_raw = len(df)
 
-    # (1) 부산 16개 구·군이 아닌 지역구 제거
-    df = df[df["지역구"].isin(BUSAN_DISTRICT_NAMES)]
+    # (1) 부산·울산·경남이 아닌 region 제거. BuildingPermit.region은 이제 수집기가
+    # 항상 채우는 NOT NULL 컬럼이라(트레이드/미분양과 동일 패턴) 이 값을 그대로 쓴다
+    # — 지역구명(district)으로 걸렀다면 창원시 하위구가 "성산구"처럼 config.py 표기와
+    # 다르게 들어온 행이나 "OO지구" 같은 오인식 값이 전부 걸러져 버렸을 것이다.
+    df = df[df["region"].isin(("부산", "울산", "경남"))]
     n_bad_district = n_raw - len(df)
 
     # (2) 2020-01-01 이전 인허가일 제거.
@@ -284,7 +296,7 @@ def load_permit_df():
 
     logger.info(
         "permit_df 정제: %d행 → %d행 "
-        "(비부산 지역구 %d행 제거, %s 이전 %d행 제거, 시행사·시공사 오염 %d행 '-' 치환)",
+        "(region 없음/부산·울산·경남 외 %d행 제거, %s 이전 %d행 제거, 시행사·시공사 오염 %d행 '-' 치환)",
         n_raw, len(df), n_bad_district, PERMIT_MIN_DATE.date(), n_too_old,
         int(polluted.sum()),
     )
@@ -386,9 +398,9 @@ def _filter_by_selection(df, sel, district_col="지역구"):
     """
     상단 지역 선택 바(selected-region-store)의 {"region","district"}에 맞춰 df를 좁힌다.
 
-    df에 'region' 컬럼이 있으면(unsold_df, price_df) 그대로 쓰고, 없으면
-    (trend_df·permit_df — Trade/BuildingPermit 원본에 region이 없거나 집계 중
-    소실됨) DISTRICT_TO_REGION으로 지역구명에서 역추정한다.
+    df에 'region' 컬럼이 있으면(unsold_df, price_df, permit_df) 그대로 쓰고, 없으면
+    (trend_df — load_trend_df()가 Trade.region을 select하지 않음) DISTRICT_TO_REGION으로
+    지역구명에서 역추정한다.
     """
     if df.empty:
         return df
@@ -1136,15 +1148,12 @@ def map_side_panel(click_data):
     u_row   = unsold_df[(unsold_df["지역구"] == gu_name) & (unsold_df["region"] == region_name)]
     p_row   = price_df[(price_df["지역구"] == gu_name) & (price_df["region"] == region_name)]
     # 인허가는 구 단위 유지 — building_permits에 동 정보가 없다.
-    # permit_df엔 region 컬럼이 없다(건축HUB·청약홈 모두 부산 데이터만 수집 중이라
-    # load_permit_df가 BUSAN_DISTRICT_NAMES로 이미 걸러 둔 상태 — CLAUDE.md 참고).
-    # 그래서 지역구명만으로 필터링하면 부산·울산 동명 구(중구·남구·동구·북구)를 클릭했을
-    # 때 부산 데이터가 울산 패널에 잘못 붙는다 — DISTRICT_TO_REGION 역추정으로
-    # 막는다(_filter_by_selection과 동일한 임시방편. permit_df에 실제 데이터 출처가
-    # 부산 외 지역으로 넓어지면 load_permit_df에서 진짜 region 컬럼을 채워야 한다).
+    # permit_df에 실제 region 컬럼이 있으므로(건축HUB·청약홈 모두 부산·울산·경남
+    # 3개 지역을 수집) 그 값을 그대로 쓴다 — 부산·울산 동명 구(중구·남구 등)를
+    # 클릭했을 때 다른 지역 데이터가 잘못 붙는 걸 막는다.
     pm_rows = permit_df[
         (permit_df["지역구"] == gu_name) &
-        (permit_df["지역구"].map(DISTRICT_TO_REGION) == region_name)
+        (permit_df["region"] == region_name)
     ].sort_values("인허가일", ascending=False).head(5).copy()
     pm_rows["인허가일"] = pm_rows["인허가일"].astype(str)
 
@@ -1208,7 +1217,7 @@ def map_side_panel(click_data):
                 ]),
             ]),
             html.Div(style={"flex":"1","minWidth":"220px"}, children=[
-                html.P("미분양 현황", style={"color":colors["muted"],"fontSize":"15px",
+                html.P("미분양 현황 (※ 구 전체 기준)", style={"color":colors["muted"],"fontSize":"15px",
                                             "letterSpacing":"0.1em","margin":"0 0 4px",
                                             "textTransform":"uppercase"}),
                 html.Div(style={**CARD,"padding":"12px 16px"}, children=[
@@ -1218,7 +1227,6 @@ def map_side_panel(click_data):
                              colors["danger"] if spike else colors["ok"]),
                     # 미분양은 구 단위로만 집계돼 들어온다. 동을 눌러도 이 숫자는
                     # 구 전체 값이므로 그렇게 밝혀 둔다.
-                    note("※ 구 전체 기준"),
                 ]),
             ]),
         ]),
