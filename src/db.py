@@ -99,6 +99,7 @@ class BuildingPermit(Base):
     __tablename__ = "building_permits"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    region = Column(String(10), nullable=False, index=True)      # '부산'/'울산'/'경남'
     district = Column(String(20), nullable=False, index=True)
     permit_date = Column(Date, nullable=False, index=True)
     household_count = Column(Integer)                            # 인허가 세대수
@@ -108,7 +109,7 @@ class BuildingPermit(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "district", "permit_date", "developer", "household_count",
+            "region", "district", "permit_date", "developer", "household_count",
             name="uq_permit_dedup",
         ),
     )
@@ -173,32 +174,191 @@ def _migrate_trades_add_region_to_constraint() -> None:
         conn.execute(text(f"DROP TABLE {TRADES_LEGACY_TABLE}"))
 
 
+UNSOLD_LEGACY_TABLE = "unsold_housing_pre_region_uq"
+
+
+def _unsold_unique_constraint_has_region() -> bool | None:
+    """
+    unsold_housing 테이블의 uq_unsold_dedup UNIQUE 제약에 region이 포함돼
+    있는지 확인. 테이블이 아직 없으면 None(마이그레이션 불필요 — 아래
+    create_all이 최신 모델 그대로 새로 만든다).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='unsold_housing'"
+        )).fetchone()
+    if row is None or row[0] is None:
+        return None
+    match = re.search(r"uq_unsold_dedup\s+UNIQUE\s*\(([^)]*)\)", row[0], re.IGNORECASE)
+    if not match:
+        return False
+    columns = [c.strip() for c in match.group(1).split(",")]
+    return "region" in columns
+
+
+def _migrate_unsold_add_region_to_constraint() -> None:
+    """
+    _migrate_trades_add_region_to_constraint()와 동일한 이유·동일한 순서
+    (rename → 현재 모델대로 재생성 → 데이터 복사 → 옛 테이블 drop)로 우회한다.
+
+    다만 UnsoldHousing.region은 Trade.region과 달리 nullable=False다. region이
+    전부 NULL인 레거시 행을 그대로 복사하면 NOT NULL 제약 위반으로 INSERT가
+    실패하는데, 그 시점엔 이미 rename·재생성이 끝난 뒤라 옛 테이블은 사라지고
+    새 테이블은 비어있는 중간 상태로 남는다. 그래서 스키마를 하나도 건드리기
+    전에 먼저 전체 행을 읽어 region을 확정해 두고, district명으로도 역보정 못
+    하는 행이 하나라도 있으면 그 자리에서 예외를 던져 스키마 변경 자체를
+    시작하지 않는다. district→region 역보정 근거는 dashboards/app.py의
+    DISTRICT_TO_REGION과 같다 — 구·군명은 지역 간에 겹치는 이름(중구·남구 등)만
+    없으면 유일하게 지역을 특정한다.
+    """
+    from src.config import BUSAN_DISTRICT_CODES, GYEONGNAM_DISTRICT_CODES, ULSAN_DISTRICT_CODES
+
+    district_to_region = {
+        **{name: "경남" for name in GYEONGNAM_DISTRICT_CODES.values()},
+        **{name: "울산" for name in ULSAN_DISTRICT_CODES.values()},
+        **{name: "부산" for name in BUSAN_DISTRICT_CODES.values()},
+    }
+
+    cols = ["id", "region", "district", "base_month", "unsold_count",
+            "prev_month_count", "change_rate", "created_at"]
+
+    with engine.connect() as conn:
+        legacy_rows = [
+            dict(zip(cols, row))
+            for row in conn.execute(text(f"SELECT {', '.join(cols)} FROM unsold_housing")).fetchall()
+        ]
+
+    unresolved = sorted({
+        r["district"] for r in legacy_rows
+        if r["region"] is None and r["district"] not in district_to_region
+    })
+    if unresolved:
+        raise RuntimeError(
+            "unsold_housing region 마이그레이션 중단 — region이 없고 구·군명으로도 "
+            f"지역을 역보정할 수 없는 행 발견: {unresolved}. "
+            "config.py의 지역 코드 맵에 해당 구·군을 추가한 뒤 다시 시도할 것."
+        )
+
+    for r in legacy_rows:
+        if r["region"] is None:
+            r["region"] = district_to_region[r["district"]]
+
+    with engine.begin() as conn:
+        # ALTER TABLE RENAME이 named index(ix_unsold_housing_district 등)의
+        # 이름을 새 테이블로 넘겨주지 않고 옛 테이블에 그대로 남기는 문제는
+        # trades 마이그레이션과 동일 — rename 전에 지워 둬야 재생성 시
+        # "index already exists" 충돌이 안 난다.
+        idx_rows = conn.execute(text("PRAGMA index_list('unsold_housing')")).fetchall()
+        for idx in idx_rows:
+            idx_name = idx[1]
+            if not idx_name.startswith("sqlite_autoindex_"):
+                conn.execute(text(f"DROP INDEX IF EXISTS {idx_name}"))
+        conn.execute(text(f"ALTER TABLE unsold_housing RENAME TO {UNSOLD_LEGACY_TABLE}"))
+
+    UnsoldHousing.__table__.create(bind=engine, checkfirst=True)
+
+    insert_cols = ", ".join(cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    with engine.begin() as conn:
+        for r in legacy_rows:
+            conn.execute(text(f"INSERT INTO unsold_housing ({insert_cols}) VALUES ({placeholders})"), r)
+        conn.execute(text(f"DROP TABLE {UNSOLD_LEGACY_TABLE}"))
+
+
+PERMIT_LEGACY_TABLE = "building_permits_pre_region_uq"
+
+
+def _permit_unique_constraint_has_region() -> bool | None:
+    """
+    building_permits 테이블의 uq_permit_dedup UNIQUE 제약에 region이 포함돼
+    있는지 확인. 테이블이 아직 없으면 None(마이그레이션 불필요 — 아래
+    create_all이 최신 모델 그대로 새로 만든다).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='building_permits'"
+        )).fetchone()
+    if row is None or row[0] is None:
+        return None
+    match = re.search(r"uq_permit_dedup\s+UNIQUE\s*\(([^)]*)\)", row[0], re.IGNORECASE)
+    if not match:
+        return False
+    columns = [c.strip() for c in match.group(1).split(",")]
+    return "region" in columns
+
+
+def _migrate_permit_add_region_to_constraint() -> None:
+    """
+    _migrate_unsold_add_region_to_constraint()와 같은 이유·같은 순서로 우회한다.
+    다만 building_permits는 region 컬럼 자체가 지금까지 한 번도 없었다(trades/
+    unsold_housing과 달리 ALTER TABLE ADD COLUMN 단계 자체가 필요 없음).
+
+    이 테이블은 지금 building_permit.py(건축HUB 배치)·cheongyak.py(청약홈) 두
+    수집기만 쓰고 둘 다 부산 전용이라, district명 기반 역추정 대신 전체 행을
+    무조건 region='부산'으로 채운다 — district에 실제 구·군명이 아니라 "부산"
+    문자열 그대로 들어간 예외적인 행(cheongyak.py가 주소에서 구·군을 못 뽑았을 때의
+    fallback)이 있어 구·군명 매핑으로는 오히려 걸러지므로, 이 테이블에 한해서는
+    매핑 대신 상수를 쓰는 게 맞다. UnsoldHousing 마이그레이션 사고 교훈대로
+    스키마를 하나도 건드리기 전에 먼저 region을 전부 확정해 둔다.
+    """
+    cols = ["id", "district", "permit_date", "household_count",
+            "developer", "contractor", "created_at"]
+
+    with engine.connect() as conn:
+        legacy_rows = [
+            dict(zip(cols, row))
+            for row in conn.execute(text(f"SELECT {', '.join(cols)} FROM building_permits")).fetchall()
+        ]
+    for r in legacy_rows:
+        r["region"] = "부산"
+
+    with engine.begin() as conn:
+        # ALTER TABLE RENAME이 named index 이름을 새 테이블로 넘겨주지 않고
+        # 옛 테이블에 남기는 문제는 trades/unsold_housing 마이그레이션과 동일.
+        idx_rows = conn.execute(text("PRAGMA index_list('building_permits')")).fetchall()
+        for idx in idx_rows:
+            idx_name = idx[1]
+            if not idx_name.startswith("sqlite_autoindex_"):
+                conn.execute(text(f"DROP INDEX IF EXISTS {idx_name}"))
+        conn.execute(text(f"ALTER TABLE building_permits RENAME TO {PERMIT_LEGACY_TABLE}"))
+
+    BuildingPermit.__table__.create(bind=engine, checkfirst=True)
+
+    insert_cols = ["id", "region", "district", "permit_date", "household_count",
+                   "developer", "contractor", "created_at"]
+    insert_cols_sql = ", ".join(insert_cols)
+    placeholders = ", ".join(f":{c}" for c in insert_cols)
+    with engine.begin() as conn:
+        for r in legacy_rows:
+            conn.execute(text(f"INSERT INTO building_permits ({insert_cols_sql}) VALUES ({placeholders})"), r)
+        conn.execute(text(f"DROP TABLE {PERMIT_LEGACY_TABLE}"))
+
+
 def init_db() -> None:
     """테이블이 없으면 생성. main.py나 최초 실행 시 1회 호출."""
     inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
 
-    # region 컬럼 자체가 없던 옛 trades 스키마 대응 — 제약 마이그레이션 전에
-    # 먼저 컬럼을 채워 둔다(없으면 아래 데이터 복사 시 "no such column" 오류).
-    if "trades" in inspector.get_table_names():
-        existing_cols = [c["name"] for c in inspector.get_columns("trades")]
-        if "region" not in existing_cols:
-            with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE trades ADD COLUMN region VARCHAR(10)"))
-                conn.commit()
+    # region 컬럼 자체가 없던 옛 스키마 대응 — 제약 마이그레이션 전에 먼저
+    # 컬럼을 채워 둔다(없으면 아래 데이터 복사 시 "no such column" 오류).
+    for table in ("trades", "unsold_housing"):
+        if table in existing_tables:
+            existing_cols = [c["name"] for c in inspector.get_columns(table)]
+            if "region" not in existing_cols:
+                with engine.connect() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN region VARCHAR(10)"))
+                    conn.commit()
 
     if _trades_unique_constraint_has_region() is False:
         _migrate_trades_add_region_to_constraint()
 
-    Base.metadata.create_all(bind=engine)
+    if _unsold_unique_constraint_has_region() is False:
+        _migrate_unsold_add_region_to_constraint()
 
-    # region 컬럼 없는 기존 DB 대응 — ALTER TABLE로 추가
-    inspector = inspect(engine)
-    for table, col in [("unsold_housing", "region")]:
-        existing = [c["name"] for c in inspector.get_columns(table)]
-        if col not in existing:
-            with engine.connect() as conn:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} VARCHAR(10)"))
-                conn.commit()
+    if _permit_unique_constraint_has_region() is False:
+        _migrate_permit_add_region_to_constraint()
+
+    Base.metadata.create_all(bind=engine)
 
 
 @contextmanager
