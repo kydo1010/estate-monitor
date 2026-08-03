@@ -66,7 +66,6 @@ def fetch_all(endpoint: str, area_code: str) -> list[dict]:
     first = fetch_page(endpoint, area_code, page=1)
     total = first.get("totalCount", 0)
     items = first.get("data", [])
-    log.info(f"{endpoint} (area={area_code}): 전체 {total}건 중 {len(items)}건 수신")
 
     page = 2
     while len(items) < total:
@@ -75,6 +74,15 @@ def fetch_all(endpoint: str, area_code: str) -> list[dict]:
             break
         items.extend(batch)
         page += 1
+
+    # totalCount는 지역(area_code) 필터와 무관하게 항상 전국 합계로 오는 것이
+    # 확인돼(부산·울산·경남 3개 지역 호출이 전부 동일값) 참고용일 뿐 신뢰할 수
+    # 없다 — 실제 종료 조건은 위 루프의 "빈 페이지" 판정이므로, 로그도 페이지네이션
+    # 시작 직후(1페이지)가 아니라 전체 수집이 끝난 뒤 최종 건수 기준으로 남긴다.
+    log.info(
+        f"{endpoint} (area={area_code}): 최종 {len(items)}건 수신 "
+        f"(totalCount 메타={total} — 지역 필터 무관 전국 합계라 참고용·부정확할 수 있음)"
+    )
 
     return items
 
