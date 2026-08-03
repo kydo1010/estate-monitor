@@ -386,6 +386,17 @@ unsold_dict = (
     if not unsold_df.empty else {}
 )
 
+# 지도 색상 모드(실거래가 기준)용 {"region_구·군명": 평균거래가(만원)} 딕셔너리.
+# unsold_dict와 동일한 키 규칙(region 접두어)을 쓴다. 구간 판정(분위수 계산)은
+# unsold와 마찬가지로 서버가 아니라 iframe(JS)이 currentSelection.region 기준으로
+# 한다 — 여기서는 원본 평균가만 넘긴다.
+price_dict = (
+    {f"{region}_{district}": float(avg) for (region, district), avg in
+     price_df.drop_duplicates(["region", "지역구"])
+             .set_index(["region", "지역구"])["평균거래가"].items()}
+    if not price_df.empty else {}
+)
+
 # 섹션 제목/구분선 스타일. build_shell()과 render_*_section 콜백들이 함께 쓰므로
 # 셸 안 지역 변수 대신 모듈 레벨 상수로 둔다 (라이트모드 고정이라 재계산 불필요).
 SECTION_WRAP_STYLE = {"marginTop":"48px","paddingTop":"32px",
@@ -458,6 +469,24 @@ def build_tab_map(colors):
                     src="/vworld-map.html",
                     style={"width":"100%","height":"560px","border":"none","borderRadius":"8px"},
                 ),
+                # 지도 색상 기준 토글 — 기본은 미분양(기존과 동일 동작),
+                # 실거래가로 바꾸면 iframe이 현재 선택된 지역 내 5분위로 재계산해 칠한다.
+                # 세그먼트(pill) 토글처럼 보이게 하는 실제 배경색 전환은
+                # assets/custom.css의 #map-color-mode 규칙(:has(input:checked))이
+                # 담당한다 — labelStyle/inputStyle은 옵션별로 다르게 줄 수 없어
+                # "선택된 것만 다른 배경색"은 인라인 style만으로는 표현이 안 된다.
+                # inputStyle로 라디오 원(circle) 자체만 시각적으로 숨긴다.
+                dcc.RadioItems(
+                    id="map-color-mode",
+                    options=[
+                        {"label": "실거래가 기준", "value": "price"},
+                        {"label": "미분양 기준", "value": "unsold"},
+                    ],
+                    value="price",
+                    inline=True,
+                    inputStyle={"position": "absolute", "opacity": 0, "width": 0, "height": 0},
+                    style={"marginTop": "12px"},
+                ),
             ]),
             html.Div(id="map-side-panel", style={**CARD, "marginTop":"16px", "minHeight":"160px"}, children=[
                 html.P("← 지도에서 구·군을 클릭하세요",
@@ -486,6 +515,12 @@ def build_tab_map(colors):
         # (최대 20초. 그 안에 지도가 못 뜨면 어차피 칠할 대상이 없다).
         dcc.Interval(id="unsold-inject-interval", interval=1000,
                      n_intervals=0, max_intervals=20),
+
+        # 실거래가 색상 모드용 데이터. unsold-data-store와 별개 채널로 둔다.
+        # 최초 진입 시 주입은 unsold-inject-interval이 이 스토어도 함께 읽어
+        # 처리하고(map-color-mode 기본값이 "price"라 필수), 이후 토글 시
+        # 재전송은 map-color-mode의 clientside_callback이 담당한다.
+        dcc.Store(id="price-data-store", data=price_dict),
     ])
 
 
@@ -612,6 +647,11 @@ def build_tab_price(colors, df, tdf, region_label="전체"):
                             kpi(colors, "총 거래건수", f"{total_d:,}건", colors["accent2"], "최근 3개월")]),
         dcc.Graph(figure=fig_t),
         dcc.Graph(figure=fig_bar),
+        # LAWD 48121이 창원시 전체가 아니라 의창구만 가리켜 "창원시 의창구"로
+        # 저장돼 있다(config.py 참고) — 값 자체는 안 건드리고 각주로만 안내.
+        html.P("※ 창원시는 API 제약으로 의창구 지역만 반영됨",
+               style={"color":colors["muted"],"fontSize":"14px","margin":"8px 0 0"})
+        if region_label == "경남" else None,
     ])
 
 
@@ -966,7 +1006,13 @@ def update_district_options(region):
         "경남": GYEONGNAM_DISTRICT_CODES,
     }
     codes = mapping.get(region, {})
-    return [{"label": v, "value": v} for v in codes.values()], None
+    # LAWD 48121은 창원시 전체가 아니라 의창구만 가리켜 config.py에 "창원시
+    # 의창구"로 정확히 등록돼 있다(scripts/migrate_changwon_district.py 참고) —
+    # value는 필터링에 그대로 쓰이므로 안 건드리고 label만 안내 문구를 붙인다.
+    return [
+        {"label": "창원시 (의창구만 수집됨)" if v == "창원시 의창구" else v, "value": v}
+        for v in codes.values()
+    ], None
 
 
 @app.callback(
@@ -1058,22 +1104,35 @@ clientside_callback(
 
 
 # Dash → 지도(iframe) 브리지의 나머지 절반.
-# unsold-inject-interval이 깨울 때마다 unsold-data-store의 내용을
-# iframe으로 postMessage한다. iframe 쪽 리스너는
+# unsold-inject-interval이 깨울 때마다 unsold-data-store·price-data-store
+# 양쪽 내용과 현재 map-color-mode 값을 전부 iframe으로 postMessage한다.
+# iframe 쪽 리스너는
 #   (1) 레이어가 이미 있으면 refreshColors()로 다시 칠하고
-#   (2) 아직 없으면 전역 unsoldData만 갱신해 두었다가 buildGuLayer가 그 값으로 칠한다
+#   (2) 아직 없으면 전역 unsoldData/priceData/colorMode만 갱신해 두었다가
+#       buildGuLayer가 그 값으로 칠한다
 # 어느 쪽이든 한 번 도착하기만 하면 되므로, 도착 여부를 확신할 수 있을 때까지
 # 재전송한다. same-origin(/vworld-map.html)이라 iframe 전역 layerList를 직접
 # 읽어 레이어 생성 여부로 판정한다.
+#
+# map-color-mode 기본값이 "price"로 바뀌면서, iframe의 JS 쪽 colorMode
+# 하드코딩 기본값("unsold")과 어긋나는 문제가 생겼다 — 별도 price-inject-interval을
+# 새로 만드는 대신, 이미 있는 이 interval에 price-data-store·map-color-mode를
+# State로 얹어 하나로 처리한다(별도 interval 두 개가 서로 다른 초기 color_mode를
+# 주장하며 경합할 여지를 원천적으로 없앤다 — State는 매 tick마다 그 시점의
+# 최신 값을 읽으므로, 이 재시도 구간(최대 20초) 동안 사용자가 직접 토글해도
+# 다음 tick이 그 값을 그대로 따라간다).
 clientside_callback(
     """
-    function(n_intervals, unsoldData) {
+    function(n_intervals, unsoldData, priceData, mode) {
         var iframe = document.getElementById('vworld-iframe');
         if (!iframe || !iframe.contentWindow) {
             return window.dash_clientside.no_update;
         }
         iframe.contentWindow.postMessage(
             { type: 'unsold_data', data: unsoldData || {} }, '*');
+        iframe.contentWindow.postMessage(
+            { type: 'trade_price_data', data: priceData || {} }, '*');
+        iframe.contentWindow.postMessage({ type: 'color_mode', mode: mode }, '*');
         try {
             var layers = iframe.contentWindow.layerList;
             if (layers && layers.length > 0) {
@@ -1088,6 +1147,45 @@ clientside_callback(
     """,
     Output("unsold-inject-interval", "disabled"),
     Input("unsold-inject-interval", "n_intervals"),
+    State("unsold-data-store", "data"),
+    State("price-data-store", "data"),
+    State("map-color-mode", "value"),
+    prevent_initial_call=True,
+)
+
+
+# map-color-mode(RadioItems) 변경 → iframe에 색상 모드 전환을 지시.
+# move_to_region과 같은 1회성 이벤트라 unsold-inject-interval 같은 재전송
+# 루프는 필요 없다.
+#
+# unsold-inject-interval은 페이지 로드 후 최대 20초 안에 iframe의 layerList
+# 존재를 확인하면 스스로 멈추고, 그 이후로는 unsold_data가 다시 전송되지
+# 않는다 — 즉 unsoldData가 세션 내내 최초 1회 주입값 그대로라는 암묵적
+# 전제에 의존한다. 처음엔 "price" 방향만 매번 데이터를 다시 보내고 "unsold"
+# 방향은 color_mode 메시지만 보냈는데, 이 비대칭이 원인 특정이 어려운
+# 회귀(반복 토글 후 미분양 색상이 안 뜨는 문제)의 여지를 남겼다 — 그래서
+# 어느 방향으로 전환하든 항상 그 모드에 맞는 데이터를 함께 재전송해
+# "최초 1회 주입 이후 상태 불변"이라는 전제 자체를 없앤다.
+clientside_callback(
+    """
+    function(mode, priceData, unsoldData) {
+        var iframe = document.getElementById('vworld-iframe');
+        if (iframe && iframe.contentWindow) {
+            if (mode === 'price') {
+                iframe.contentWindow.postMessage(
+                    { type: 'trade_price_data', data: priceData || {} }, '*');
+            } else {
+                iframe.contentWindow.postMessage(
+                    { type: 'unsold_data', data: unsoldData || {} }, '*');
+            }
+            iframe.contentWindow.postMessage({ type: 'color_mode', mode: mode }, '*');
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("price-data-store", "data", allow_duplicate=True),
+    Input("map-color-mode", "value"),
+    State("price-data-store", "data"),
     State("unsold-data-store", "data"),
     prevent_initial_call=True,
 )
@@ -1151,8 +1249,17 @@ def map_side_panel(click_data):
     # permit_df에 실제 region 컬럼이 있으므로(건축HUB·청약홈 모두 부산·울산·경남
     # 3개 지역을 수집) 그 값을 그대로 쓴다 — 부산·울산 동명 구(중구·남구 등)를
     # 클릭했을 때 다른 지역 데이터가 잘못 붙는 걸 막는다.
+    # building_permits.district는 창원시 5개 하위구를 "창원시" 하나로 통일해
+    # 저장하지만(cheongyak.py/building_permit.py 참고), 드롭다운·Trade는 LAWD
+    # 48121 표기 그대로 "창원시 의창구"를 쓴다(config.py) — 그 값이 클릭됐을
+    # 때만 permit_df 매칭에 "창원시"도 포함시킨다. 다른 구·군은 기존과 동일.
+    permit_district_match = (
+        permit_df["지역구"].isin(("창원시 의창구", "창원시"))
+        if gu_name == "창원시 의창구"
+        else permit_df["지역구"] == gu_name
+    )
     pm_rows = permit_df[
-        (permit_df["지역구"] == gu_name) &
+        permit_district_match &
         (permit_df["region"] == region_name)
     ].sort_values("인허가일", ascending=False).head(5).copy()
     pm_rows["인허가일"] = pm_rows["인허가일"].astype(str)

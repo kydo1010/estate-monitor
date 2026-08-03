@@ -59,12 +59,25 @@
   <div id="loading">지도 로딩 중...</div>
   <div id="map"></div>
   <div id="legend">
-    <h4>미분양 현황</h4>
-    <div class="legend-item"><div class="legend-color" style="background:#1a6b3c"></div> 미분양 없음</div>
-    <div class="legend-item"><div class="legend-color" style="background:#4caf82"></div> 50세대 미만</div>
-    <div class="legend-item"><div class="legend-color" style="background:#f5c842"></div> 50~150세대</div>
-    <div class="legend-item"><div class="legend-color" style="background:#e8845a"></div> 150~300세대</div>
-    <div class="legend-item"><div class="legend-color" style="background:#e05c5c"></div> 300세대 이상</div>
+    <div id="legend-unsold">
+      <h4>미분양 현황</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#1a6b3c"></div> 미분양 없음</div>
+      <div class="legend-item"><div class="legend-color" style="background:#4caf82"></div> 50세대 미만</div>
+      <div class="legend-item"><div class="legend-color" style="background:#f5c842"></div> 50~150세대</div>
+      <div class="legend-item"><div class="legend-color" style="background:#e8845a"></div> 150~300세대</div>
+      <div class="legend-item"><div class="legend-color" style="background:#e05c5c"></div> 300세대 이상</div>
+    </div>
+    <!-- 실거래가 모드 — 절대 가격 구간이 아니라 "현재 선택된 지역 내" 5분위
+         상대 순위다(부산·경남 등 지역 간 절대 가격차가 커서 고정 구간은
+         특정 지역이 항상 빨강/초록으로 고정돼 정보성이 없다). -->
+    <div id="legend-price" style="display:none">
+      <h4>실거래가 (선택 지역 내 상대순위)</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#1a6b3c"></div> 하위 20%</div>
+      <div class="legend-item"><div class="legend-color" style="background:#4caf82"></div> 중하위 20%</div>
+      <div class="legend-item"><div class="legend-color" style="background:#f5c842"></div> 중위 20%</div>
+      <div class="legend-item"><div class="legend-color" style="background:#e8845a"></div> 중상위 20%</div>
+      <div class="legend-item"><div class="legend-color" style="background:#e05c5c"></div> 상위 20%</div>
+    </div>
   </div>
 
   <script>
@@ -127,6 +140,10 @@
 
     /* ---------------- 상태 ---------------- */
     var unsoldData  = {};
+    var priceData   = {};       // 'region_구군' → 평균거래가(만원), 실거래가 색상 모드용
+    var colorMode   = 'unsold'; // 'unsold' | 'price' — Dash map-color-mode RadioItems가 결정
+    var priceBreakpoints = null;       // 현재 캐시된 5분위 경계값 [p20,p40,p60,p80]
+    var priceBreakpointsRegion = null; // 위 캐시가 어느 region 기준으로 계산됐는지
     var map;                   // vw.ol3.Map
     var olMap;                 // ol.Map (map 자체이거나 map.map)
     var wmsSource   = null;
@@ -172,6 +189,15 @@
       if (el) el.style.display = on ? 'block' : 'none';
     }
 
+    // colorMode에 맞는 범례 세트만 보이게 전환한다 (showLegend는 전체 #legend
+    // 박스의 노출 여부만 담당 — 이 함수는 그 안의 두 세트 중 하나를 고른다).
+    function setLegendMode(mode) {
+      var unsoldEl = document.getElementById('legend-unsold');
+      var priceEl  = document.getElementById('legend-price');
+      if (unsoldEl) unsoldEl.style.display = (mode === 'price') ? 'none' : 'block';
+      if (priceEl)  priceEl.style.display  = (mode === 'price') ? 'block' : 'none';
+    }
+
     function currentDomain() {
       // 포트를 포함해야 한다 — 상단 로더의 host/Referer 주석 참고.
       return window.location.protocol + '//' + window.location.host;
@@ -182,6 +208,48 @@
       if (unsoldCount < 50)  return '#4caf82';
       if (unsoldCount < 150) return '#f5c842';
       if (unsoldCount < 300) return '#e8845a';
+      return '#e05c5c';
+    }
+
+    // 실거래가는 지역 간 절대 가격 스케일 차이가 커서(부산 해운대구 vs 경남
+    // 소도시 등) 고정 구간을 쓰면 특정 지역이 늘 한 색으로 고정돼 정보성이
+    // 없다 — 그래서 "현재 선택된 지역(region) 내" 5분위(상대 순위)로 칠한다.
+    // priceData 안에서 region이 일치하는 값들만 모아 20/40/60/80 백분위
+    // 경계값을 계산해 캐시해 둔다(region이 바뀌거나 priceData가 갱신될 때만
+    // 다시 계산 — guFillStyle이 feature마다 부르므로 매번 정렬하면 낭비).
+    function computePriceBreakpoints(region) {
+      var values = [];
+      for (var key in priceData) {
+        if (key.indexOf(region + '_') === 0) values.push(priceData[key]);
+      }
+      values.sort(function (a, b) { return a - b; });
+      if (!values.length) {
+        priceBreakpoints = null;
+        priceBreakpointsRegion = region;
+        return;
+      }
+      function pct(p) {
+        // floor(n*p)를 쓰면 p=0.8에서 n이 작을 때 breakpoint가 최댓값 자체가
+        // 돼 버려(예: n=5→idx=4=마지막) 아래 getPriceColor의 "<=" 비교상
+        // 최댓값이 항상 4번째 버킷에 걸리고 5번째(상위 20%, 빨강)가 영원히
+        // 도달 불가능해진다 — ceil(n*p)-1로 한 칸 당겨 최댓값이 실제로
+        // breakpoint보다 커지도록 한다.
+        var idx = Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * p) - 1));
+        return values[idx];
+      }
+      priceBreakpoints = [pct(0.2), pct(0.4), pct(0.6), pct(0.8)];
+      priceBreakpointsRegion = region;
+    }
+
+    function getPriceColor(avgPrice, region) {
+      if (avgPrice === undefined || avgPrice === null) return null;  // 데이터 없음
+      if (priceBreakpointsRegion !== region) computePriceBreakpoints(region);
+      if (!priceBreakpoints) return null;
+      var bp = priceBreakpoints;
+      if (avgPrice <= bp[0]) return '#1a6b3c';
+      if (avgPrice <= bp[1]) return '#4caf82';
+      if (avgPrice <= bp[2]) return '#f5c842';
+      if (avgPrice <= bp[3]) return '#e8845a';
       return '#e05c5c';
     }
 
@@ -508,6 +576,13 @@
       if (!isSelected) {
         return neutralFillStyle();
       }
+      if (colorMode === 'price') {
+        var region = feature.get('__region');
+        var color  = getPriceColor(priceData[key], region);
+        // 해당 구·군에 실거래가 데이터가 없으면(color===null) 선택 밖과
+        // 같은 무채색으로 — "칠할 근거가 없다"를 "미분양 없음"과 구분한다.
+        return color ? coloredFillStyle(color) : neutralFillStyle();
+      }
       return coloredFillStyle(getColor(unsoldData[key] || 0));
     }
 
@@ -681,8 +756,29 @@
 
     window.addEventListener('message', function (evt) {
       if (!evt.data) return;
+      // DEBUG: 색상 모드 회귀 조사용 — 원인 확정되면 이 블록 전부 제거할 것.
+      console.log('[vworld][debug] message 수신:', evt.data.type,
+        ' colorMode(수신 전)=', colorMode,
+        ' unsoldData건수=', Object.keys(unsoldData).length,
+        ' priceData건수=', Object.keys(priceData).length);
       if (evt.data.type === 'unsold_data') {
         unsoldData = evt.data.data || {};
+        console.log('[vworld][debug] unsoldData 갱신 ->', Object.keys(unsoldData).length, '건');
+        refreshColors();
+      } else if (evt.data.type === 'trade_price_data') {
+        priceData = evt.data.data || {};
+        priceBreakpoints = null;  // 새 데이터니 다음 getPriceColor 호출 때 재계산
+        console.log('[vworld][debug] priceData 갱신 ->', Object.keys(priceData).length, '건');
+        refreshColors();
+      } else if (evt.data.type === 'color_mode') {
+        // Dash map-color-mode(RadioItems)가 보낸다. guFillStyle이 이 값으로
+        // getColor/getPriceColor를 분기하므로 갱신 후 다시 칠하고, 범례도
+        // 맞춰 바꾼다.
+        colorMode = evt.data.mode === 'price' ? 'price' : 'unsold';
+        console.log('[vworld][debug] colorMode ->', colorMode,
+          ' (전환 시점 unsoldData건수=', Object.keys(unsoldData).length,
+          ' priceData건수=', Object.keys(priceData).length, ')');
+        setLegendMode(colorMode);
         refreshColors();
       } else if (evt.data.type === 'move_to_region') {
         // Dash 쪽 지역 선택 바(region-select/district-select)가 보낸다.
@@ -708,6 +804,11 @@
       // changed() 호출까지 막으면 안 된다. 레이어가 없으면 다음에 실제로
       // 만들어질 때 그 시점의 최신 상태(unsoldData/highlightedDongKey)를
       // 스타일 함수가 그대로 읽으므로 여기서 값만 갱신해 두는 것으로 충분하다.
+      // DEBUG: 색상 모드 회귀 조사용 — 원인 확정되면 이 줄 제거할 것.
+      console.log('[vworld][debug] refreshColors() 호출 — colorMode=', colorMode,
+        ' guLayer 존재=', !!guLayer, ' dongLayer 존재=', !!dongLayer,
+        ' unsoldData건수=', Object.keys(unsoldData).length,
+        ' priceData건수=', Object.keys(priceData).length);
       if (guLayer) {
         guLayer.changed();
         showLegend(true);
