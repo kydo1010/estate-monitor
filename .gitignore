@@ -9,3 +9,5 @@ data/*.log
 data/*.json
 *.log
 dashboards/assets/geometry_cache/
+data/*.bak_*
+data/*.txt
