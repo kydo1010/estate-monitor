@@ -56,13 +56,6 @@ def collect_unsold() -> None:
     log.info("미분양 현황 수집 완료")
 
 
-def collect_building_permits() -> None:
-    log.info("건축인허가 수집 시작")
-    from src.collectors.building_permit import run
-    run()
-    log.info("건축인허가 수집 완료")
-
-
 def collect_cheongyak() -> None:
     log.info("청약홈 분양정보 수집 시작")
     from src.collectors.cheongyak import run
@@ -76,10 +69,13 @@ def run_weekly_update() -> None:
     log.info(f"주간 갱신 시작: {start.strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("=" * 60)
 
+    # 건축HUB 배치 수집(collect_building_permits)은 제거됨 — building_permit.py
+    # 배치 기원 데이터가 실제 세대수·시공사가 제대로 안 채워지는 등 품질이 낮고,
+    # 화면에서 청약홈 기원 데이터와 구분도 안 돼 폐지하고 실시간 검색 위젯
+    # (dashboards/app.py의 search_building_permit)으로만 쓰기로 함.
     tasks = [
         ("실거래가",        collect_trades),
         ("미분양 현황",     collect_unsold),
-        ("건축인허가",      collect_building_permits),
         ("청약홈 분양정보", collect_cheongyak),
     ]
 

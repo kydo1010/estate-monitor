@@ -30,9 +30,11 @@ python -m src.collectors.molit_apartment --months 202606 202605
 python -m src.collectors.molit_apt_rights
 python -m src.collectors.molit_officetel
 python -m src.collectors.busan_unsold
-python -m src.collectors.building_permit --sigungu 26350   # 미입력 시 부산 전체
+python -m src.collectors.gyeongnam_unsold
 python -m src.collectors.cheongyak
 python -m src.collectors.hug_price --start 202401 --end 202506
+# 건축HUB(building_permit.py)는 배치 수집기가 폐지돼 단독 실행 커맨드가 없다 —
+# 대시보드 "🏗 착공·허가" 섹션 하단의 실시간 검색으로만 조회한다.
 
 # 스케줄러 단독 (즉시 1회 또는 상시)
 python -m src.scheduler --once
@@ -70,8 +72,9 @@ python -m src.scheduler
   `run(months=[...])`이 부산 16개 구·군 × 지정 월을 순회하며 XML을 파싱·저장한다
   (호출 간 `REQUEST_DELAY_SEC=1.0`초, 실패 시 지수 백오프 `MAX_RETRIES=3`).
   새 국토부 실거래가 API를 추가할 때는 이 베이스를 상속.
-- **`src/collectors/{busan_unsold,building_permit,cheongyak,hug_price}.py`** — 응답 포맷이 국토부
-  실거래가 API와 달라 베이스를 쓰지 않는 독립 수집기 (모듈 레벨 `run()` 함수 패턴).
+- **`src/collectors/{busan_unsold,gyeongnam_unsold,cheongyak,hug_price}.py`** — 응답 포맷이 국토부
+  실거래가 API와 달라 베이스를 쓰지 않는 독립 수집기 (모듈 레벨 `run()` 함수 패턴). 건축HUB
+  배치 수집기(`building_permit.py`)는 폐지·삭제됨 — 아래 "청약홈/건축HUB" 항목 참고.
 - **`src/scheduler.py`** — `schedule` 라이브러리로 매주 월요일 07:00에 `run_weekly_update()` 실행.
   개별 수집기 실패는 다른 수집기를 막지 않고 로그만 남긴다(`data/scheduler.log`).
 - **`main.py`** — 4가지 실행 모드 분기. 기본 모드는 스케줄러를 데몬 스레드로 백그라운드 실행하면서
@@ -123,18 +126,51 @@ python -m src.scheduler
   `src/config.py` 모듈 레벨 상수로 임포트 시점에 1회만 읽히고, `dashboards/app.py`의
   `/vworld-map.html` 라우트가 그 값을 치환해 내보낸다.
 
+## 데이터 출처 매핑
+
+대시보드 각 섹션이 실제로 어느 DB 테이블/API를 쓰는지 정리한 표. `dashboards/app.py`의
+`load_*_df()` 함수들은 모듈 임포트 시점에 전역 df(`unsold_df`/`price_df`/`permit_df`/`trend_df`)를
+1회만 만들고(위 "데이터는 모듈 임포트 시점에 1회만 로드된다" 항목 참고), 이후 콜백은 그 df를
+`_filter_by_selection`으로 좁혀 재사용할 뿐 DB를 다시 쿼리하지 않는다 — 아래 표에서 "직접
+쿼리"라고 명시한 것만 예외(클릭·검색 시점에 실제로 DB나 외부 API를 다시 호출).
+
+| 화면 섹션 | 데이터 출처 | 비고 |
+|---|---|---|
+| 지도 위 KPI 3개(평균거래가·급증구·군·미분양최다) | `price_df`(`get_avg_price_by_district`→`Trade`) + `unsold_df`(`UnsoldHousing`) | `build_map_kpi_row`. 전역 df 필터링만, 실시간 호출 없음 |
+| 🔔 미분양 알림 | `UnsoldHousing` 테이블(`unsold_df`) | 부산만 실질 지원 — 경남은 정부 API 백엔드 장애로 데이터 없음, 울산은 수집기 자체가 없음(위 항목 참고) |
+| 📊 거래가 분석 | `Trade` 테이블 — 구·군별 평균은 `price_df`(`get_avg_price_by_district`), 월별 추이 라인차트는 `trend_df`(`load_trend_df`, 원본 거래 전체) | 국토부 실거래가 3종(아파트/분양권전매/오피스텔) 배치 수집 결과 |
+| 🏗 착공·허가 (상단 KPI·막대그래프·"최근 인허가 내역" 표) | `BuildingPermit` 테이블(`permit_df`) — **청약홈(`cheongyak.py`) 단일 출처** | 건축HUB 배치 수집기(`building_permit.py`)는 폐지·삭제되고 그 기원 데이터도 테이블에서 전량 삭제됨(아래 참고) — 더 이상 출처 혼재 없음 |
+| 건축HUB 주택인허가 검색(하단 실시간 검색 위젯) | DB 미사용 — `search_building_permit` 콜백이 건축HUB API(`HsPmsHubService`)를 클릭 시점에 직접 `requests.get()` | `permit_df`/`BuildingPermit`과 완전히 무관. 건축HUB를 쓰는 유일한 경로(배치 수집 폐지) |
+| 지도 클릭 사이드패널 — 실거래가 | 동 선택 시 `Trade`를 **직접 쿼리**(`load_dong_trades`, 클릭마다 실행), 동 실거래 없으면 `price_df`(구 평균)로 대체 | 유일하게 클릭 시점에 DB를 다시 쿼리하는 실거래가 경로 |
+| 지도 클릭 사이드패널 — 미분양 | `unsold_df`(`UnsoldHousing`) | 구 단위만 존재(동 정보 없음) |
+| 지도 클릭 사이드패널 — 최근 인허가 | `permit_df`(`BuildingPermit`, 청약홈 단일 출처) | 착공·허가 섹션과 동일 |
+
+**건축HUB 배치 수집 폐지 경위**: `building_permit.py`가 쌓은 데이터는 세대수·시공사가 자주
+비어 있어 품질이 낮았고, 청약홈 데이터와 화면에서 구분할 방법도 없었다. `developer` 필드가
+"시/도명 + 공백 + 구·군·동 + 번지/블록" 형태의 **주소**면 건축HUB 기원, 회사명·조합명이면
+청약홈 기원이라는 게 확인돼(`developer←platPlc` vs `developer←BSNS_MBY_NM`, 아래 "Data flow
+gotchas" 참고) 이 패턴으로 `building_permits`에서 건축HUB 기원 7,112건을 전량 삭제하고
+(청약홈 기원 621건만 남김), `building_permit.py` 파일과 `scheduler.py`의
+`collect_building_permits()` 호출을 제거했다. **주의**: 단순 부분일치(`developer`에 "울산광역시"
+포함 등)로 판별하면 `"울산광역시도시공사"`/`"경상남도개발공사"`처럼 지역명을 포함한 정당한
+청약홈 시행사명(공공기관명)까지 오탐으로 걸러진다 — 실제로 이 문제 때문에 `load_permit_df()`의
+옛 `PERMIT_ADDRESS_MARKERS` 기반 시행사·시공사 "-" 치환 로직도 함께 제거했다(건축HUB 데이터가
+없으니 청소할 대상 자체가 없어졌고, 남아 있었다면 같은 오탐을 계속 냈을 것). 시/도명 뒤에
+**공백이 오는지**를 반드시 확인해서 주소와 기관명을 구분할 것.
+
 ## Data flow gotchas
 
 - 지역 매핑은 항상 `src/config.py`의 `BUSAN_DISTRICT_CODES`/`BUSAN_CODE_TO_NAME`/
   `BUSAN_NAME_TO_CODE`를 통해야 함 — 구·군명을 하드코딩하지 말 것.
-- **`building_permits` 테이블은 성격이 다른 두 수집기가 공유한다.** `building_permit.py`(건축HUB)는
-  `developer←platPlc(주소)`, `contractor←bldNm(건물명)`으로 넣고, `cheongyak.py`(청약홈 분양공고)는
-  `developer←BSNS_MBY_NM(시행사)`, `contractor←CNSTRCT_ENTRPS_NM 또는 HOUSE_NM`으로 넣는다.
-  즉 대시보드 "시공사" 컬럼과 시공사별 도넛차트에는 실제 시공사명과 단지명·주소가 섞여 있다.
-  이 테이블을 다루는 코드를 쓸 때 두 출처가 섞여 있음을 전제할 것.
-- **스케줄러는 HUG 분양가격을 수집하지 않는다.** `run_weekly_update()`의 대상은 실거래가(최근
-  3개월) → 미분양 → 건축인허가 → 청약홈 4종뿐이다 (README 표는 HUG도 배치라고 적혀 있으나 코드와
-  불일치). `hug_price`는 수동 실행 전용.
+- **`building_permits` 테이블은 이제 청약홈(`cheongyak.py`) 단일 출처다.** 예전엔
+  `building_permit.py`(건축HUB, `developer←platPlc(주소)`, `contractor←bldNm(건물명)`)와
+  섞여 있었지만 배치 수집기를 폐지하며 그 기원 데이터를 전량 삭제했다(위 "데이터 출처 매핑"
+  참고) — 지금은 `developer←BSNS_MBY_NM(시행사)`, `contractor←CNSTRCT_ENTRPS_NM 또는
+  HOUSE_NM`만 들어온다. 건축HUB는 대시보드 실시간 검색으로만 남아 있고 `building_permits`에
+  아무것도 안 쓴다.
+- **스케줄러는 HUG 분양가격과 건축인허가를 수집하지 않는다.** `run_weekly_update()`의 대상은
+  실거래가(최근 1개월) → 미분양 → 청약홈 3종뿐이다 (README 표는 HUG도 배치라고 적혀 있으나
+  코드와 불일치). 건축인허가(건축HUB) 배치는 폐지됐고, `hug_price`는 원래부터 수동 실행 전용.
 - **`HugPrice` 모델은 `db.py`가 아니라 `hug_price.py` 안에 정의되어 있다.** `init_db()`로는
   `hug_prices` 테이블이 생기지 않고, 같은 모듈의 `ensure_table()`을 호출해야 한다. 다만 `Base`를
   공유하므로 이 모듈을 임포트한 뒤 `init_db()`를 부르면 생성되는 임포트 순서 의존성이 있다.

@@ -233,8 +233,6 @@ def load_price_df():
 # 넣으므로 "시행사"에 주소가, "시공사"에 단지명이 들어온 행이 섞인다.
 # 시행사 값의 주소 흔적으로 그런 행을 골라내 두 컬럼을 "-"로 비운다.
 # (행 자체는 남긴다 — 지역구·인허가일·세대수는 그대로 쓸 수 있는 값이다.)
-PERMIT_ADDRESS_MARKERS = ("부산광역시", "경상남도", "블록")
-
 # 2020년 이전 인허가 건은 극소수인데 x축을 20년으로 늘려 최근 추세를 눌러버린다.
 PERMIT_MIN_DATE = pd.Timestamp("2020-01-01")
 
@@ -287,18 +285,17 @@ def load_permit_df():
     df = df[~(parsed < PERMIT_MIN_DATE)].copy()
     n_too_old = n_before - len(df)
 
-    # (3) 시행사에 주소가 들어온 행의 시행사·시공사를 "-"로 치환
-    polluted = pd.Series(False, index=df.index)
-    developer = df["시행사"].fillna("")
-    for marker in PERMIT_ADDRESS_MARKERS:
-        polluted |= developer.str.contains(marker, regex=False)
-    df.loc[polluted, ["시행사", "시공사"]] = "-"
+    # 예전엔 여기서 시행사에 주소가 들어온 행(building_permit.py/건축HUB 기원)의
+    # 시행사·시공사를 "-"로 치환했다 — building_permit.py 배치 수집을 폐지하고
+    # building_permits에서 그 기원 데이터를 전량 삭제하면서 이 로직 자체가
+    # 청소할 대상이 없어졌다. 그대로 뒀다면 "경상남도개발공사"처럼 지역명을
+    # 포함한 정상적인 청약홈 시행사명까지 오탐으로 지워버리는 부작용만 남았을
+    # 것이라 제거한다.
 
     logger.info(
         "permit_df 정제: %d행 → %d행 "
-        "(region 없음/부산·울산·경남 외 %d행 제거, %s 이전 %d행 제거, 시행사·시공사 오염 %d행 '-' 치환)",
+        "(region 없음/부산·울산·경남 외 %d행 제거, %s 이전 %d행 제거)",
         n_raw, len(df), n_bad_district, PERMIT_MIN_DATE.date(), n_too_old,
-        int(polluted.sum()),
     )
     return df
 
@@ -558,7 +555,6 @@ def build_tab_unsold(colors, df, region_label="부산"):
     # 오해하게 만든다. 판정 가능(급증 아님이 확인됨)/판정 대기를 나눈다.
     pending_df = df[df["증감률"].isna()]
     normal_df  = df[(~df["급증여부"]) & df["증감률"].notna()]
-    n_pending = len(pending_df)
     n_normal  = len(normal_df)
 
     bar_df = df.sort_values("미분양세대수", ascending=True)
@@ -595,8 +591,7 @@ def build_tab_unsold(colors, df, region_label="부산"):
                                 sub=f"{region_label} {n_total}개 구·군" if region_label else "데이터 없음"),
                             kpi(colors, "급증 타깃", n_spike_local, colors["danger"],
                                 f"전월 대비 {UNSOLD_SPIKE_THRESHOLD_PCT:.0f}%↑"),
-                            kpi(colors, "정상", n_normal, colors["ok"], "급증 아님 확인됨"),
-                            kpi(colors, "판정 대기", n_pending, colors["muted"], "전월 비교 데이터 없음")]),
+                            kpi(colors, "정상", n_normal, colors["ok"], "급증 아님 확인됨")]),
         html.Div(style={**CARD,"marginBottom":"24px","borderLeft":f"3px solid {colors['danger']}"}, children=[
             html.P("⚠  영업 우선 타깃 — 시공사 교체 또는 분양 전략 변경 가능성 높음",
                    style={"color":colors["danger"],"fontWeight":"600","margin":"0 0 16px","fontSize":"18px"}),
@@ -725,13 +720,17 @@ def build_tab_permit(colors, df):
         data_banner(
             colors,
             f"인허가 {len(df):,}건  ·  {fmt_period(df['인허가일'] if not df.empty else None)}",
-            "출처: 청약홈 분양정보 API (배치 수집) + 건축HUB 주택인허가 API (실시간 검색)",
+            "출처: 청약홈 분양정보 API",
             "매주 월요일 07:00 자동 갱신",
         ),
         summary_block,
 
-        # 건축HUB 단지 검색 — 국토교통부 건축HUB 주택인허가정보 서비스는
-        # 이제 이 실시간 검색 조회 방식만으로 사용함 (배치 수집은 폐지).
+        # 건축HUB 단지 검색 — 위 permit_df(청약홈 배치 수집)와 완전히 별개로,
+        # 건축HUB 주택인허가정보 서비스를 구·군/동 선택 즉시 조회하는 실시간
+        # 검색 전용 경로다. building_permit.py 배치 수집기는 폐지됐다(데이터
+        # 품질이 낮고 청약홈과 출처 구분도 안 돼 building_permits 테이블에서
+        # 전량 삭제, scheduler.py의 collect_building_permits 호출도 제거) —
+        # 건축HUB는 이제 이 실시간 검색으로만 쓴다.
         html.Div(style={**CARD,"marginTop":"24px"}, children=[
             html.P("건축HUB 주택인허가 검색",
                    style={"color":colors["text"],"fontSize":"21px","fontWeight":"700",
