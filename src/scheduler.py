@@ -29,14 +29,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def _recent_months(n: int = 3) -> list[str]:
+def _recent_months(n: int = 1) -> list[str]:
     from dateutil.relativedelta import relativedelta
     today = date.today()
     return [(today - relativedelta(months=i)).strftime("%Y%m") for i in range(n)]
 
 
 def collect_trades() -> None:
-    months = _recent_months(3)
+    months = _recent_months(1)
     log.info(f"실거래가 수집 시작 — 대상 월: {', '.join(months)}")
     from src.collectors.molit_apartment import ApartmentTradeCollector
     ApartmentTradeCollector().run(months=months)
