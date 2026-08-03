@@ -1,0 +1,19 @@
+[Unit]
+Description=부산·울산·경남 분양·거래시장 통합 모니터 (Dash 대시보드 + 스케줄러)
+After=network.target
+
+[Service]
+Type=simple
+User=dev1
+WorkingDirectory=/kyungdong/estate-monitor
+# db.py의 DB_PATH가 상대경로("data/estate_monitor.db")라 WorkingDirectory가
+# 반드시 저장소 루트여야 한다(CLAUDE.md 참고) — 다른 cwd로 실행하면 새 빈 DB가
+# 엉뚱한 위치에 생긴다.
+ExecStart=/kyungdong/estate-monitor/venv/bin/python /kyungdong/estate-monitor/main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
