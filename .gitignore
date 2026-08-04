@@ -11,3 +11,4 @@ data/*.json
 dashboards/assets/geometry_cache/
 data/*.bak_*
 data/*.txt
+.claude/settings.json

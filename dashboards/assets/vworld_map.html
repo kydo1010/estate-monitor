@@ -885,10 +885,39 @@
       // (maxZoom)은 필요하다 — 안 두면 아주 작은 구·군 하나로 region 전체를
       // 대표하는 극단적인 경우 등에서 과도하게 확대될 수 있다. padding은 경계선이
       // 프레임 끝에 딱 붙지 않도록 하는 여백이다.
-      olMap.getView().fit(extent, {
+      // size를 명시적으로 넘긴다 — 생략하면 fit()이 호출 시점의
+      // olMap.getSize()를 암묵적으로 읽는데, iframe이 막 로드된 직후처럼
+      // 레이아웃이 아직 안정되지 않은 시점에는 이 값이 실제 화면 크기보다
+      // 작게 잡혀 필요 이상으로 깊은 줌을 계산할 수 있다.
+      var mapSize = olMap.getSize();
+      var view = olMap.getView();
+      view.fit(extent, {
+        size:     mapSize,
         padding:  [40, 40, 40, 40],
         maxZoom:  fitMaxZoom,
         duration: 500,
+      });
+      // duration이 있는 fit()은 비동기 애니메이션이라 호출 직후 getZoom()은
+      // 아직 시작 시점 값이다 — 애니메이션이 끝난 뒤의 실제 줌을 보려면
+      // moveend 1회만 듣는다 (계속 듣으면 사용자가 수동으로 줌/이동할 때도
+      // 매번 찍혀 로그가 시끄러워진다).
+      console.log('[vworld] moveToRegion: fit 요청 — extent=' + extent.map(function (n) { return Math.round(n); })
+                 + ' (폭 ' + Math.round(ol.extent.getWidth(extent)) + 'm × 높이 '
+                 + Math.round(ol.extent.getHeight(extent)) + 'm), mapSize=' + mapSize
+                 + ', maxZoom=' + fitMaxZoom);
+      olMap.once('moveend', function () {
+        var finalZoom = view.getZoom();
+        console.log('[vworld] moveToRegion: fit 완료 — 최종 zoom=' + finalZoom.toFixed(2));
+        // fit()의 maxZoom 옵션이 (라이브러리 버전·extent 이상치 등 원인으로) 지켜지지
+        // 않는 경우가 실측으로 확인됐다 — grep으로도 이 zoom을 재조정하는 다른
+        // 리스너/코드가 vworld_map.html 안에 없음을 확인했으므로(fit() 자체가 상한을
+        // 넘겨 계산), fit()을 신뢰하는 대신 여기서 직접 강제한다. 이미 상한 이내면
+        // 아무 것도 하지 않아 애니메이션이 다시 튀지 않는다.
+        if (finalZoom > fitMaxZoom) {
+          console.warn('[vworld] moveToRegion: fit()이 maxZoom(' + fitMaxZoom
+                      + ')을 넘겨 zoom=' + finalZoom.toFixed(2) + '로 끝나 강제로 되돌립니다.');
+          view.setZoom(fitMaxZoom);
+        }
       });
     }
 

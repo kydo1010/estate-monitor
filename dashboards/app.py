@@ -9,7 +9,6 @@ import json
 import logging
 import re
 import time
-import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -20,9 +19,9 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, clientside_c
 
 from src.config import (
     UNSOLD_SPIKE_THRESHOLD_PCT, VWORLD_API_KEY, VWORLD_DOMAIN,
-    BUSAN_DISTRICT_CODES, BUSAN_DONG_CODES,
-    ULSAN_DISTRICT_CODES, ULSAN_DONG_CODES,
-    GYEONGNAM_DISTRICT_CODES, GYEONGNAM_DONG_CODES,
+    BUSAN_DISTRICT_CODES,
+    ULSAN_DISTRICT_CODES,
+    GYEONGNAM_DISTRICT_CODES,
     ALL_DISTRICT_CODES,
 )
 from src.db import (
@@ -449,7 +448,7 @@ def build_tab_map(colors):
 
     base_month = unsold_df["기준월"].max() if not unsold_df.empty else "-"
 
-    return html.Div([
+    return html.Div(id="map-section", style={"scrollMarginTop":"100px"}, children=[
         data_banner(
             colors,
             f"미분양 현황 기준월 {base_month}",
@@ -457,15 +456,10 @@ def build_tab_map(colors):
             "매주 월요일 07:00 자동 갱신",
         ),
         html.Div(id="map-kpi-row"),
-        html.Div([
+        html.Div(style={"display":"grid", "gridTemplateColumns":"3fr 2fr", "gap":"16px"}, children=[
             html.Div(style=CARD, children=[
                 html.P("구·군을 클릭하면 상세 정보를 확인할 수 있습니다.",
                        style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 10px"}),
-                html.Iframe(
-                    id="vworld-iframe",
-                    src="/vworld-map.html",
-                    style={"width":"100%","height":"560px","border":"none","borderRadius":"8px"},
-                ),
                 # 지도 색상 기준 토글 — 기본은 미분양(기존과 동일 동작),
                 # 실거래가로 바꾸면 iframe이 현재 선택된 지역 내 5분위로 재계산해 칠한다.
                 # 세그먼트(pill) 토글처럼 보이게 하는 실제 배경색 전환은
@@ -482,10 +476,15 @@ def build_tab_map(colors):
                     value="price",
                     inline=True,
                     inputStyle={"position": "absolute", "opacity": 0, "width": 0, "height": 0},
-                    style={"marginTop": "12px"},
+                    style={"marginBottom": "12px"},
+                ),
+                html.Iframe(
+                    id="vworld-iframe",
+                    src="/vworld-map.html",
+                    style={"width":"100%","height":"560px","border":"none","borderRadius":"8px"},
                 ),
             ]),
-            html.Div(id="map-side-panel", style={**CARD, "marginTop":"16px", "minHeight":"160px"}, children=[
+            html.Div(id="map-side-panel", style={**CARD, "minHeight":"160px"}, children=[
                 html.P("← 지도에서 구·군을 클릭하세요",
                        style={"color":colors["muted"],"fontSize":"18px",
                               "marginTop":"20px","textAlign":"center"}),
@@ -523,7 +522,7 @@ def build_tab_map(colors):
 
 UNSOLD_UNSUPPORTED_REGION_MSG = (
     "미분양 현황은 현재 부산만 제공됩니다 — 울산·경남 미분양 API는 "
-    "연동돼 있지 않습니다(경남은 정부 API 백엔드 장애로 보류 중)."
+    "연동돼 있지 않습니다."
 )
 
 
@@ -548,7 +547,13 @@ def build_tab_unsold(colors, df, region_label="부산"):
 
     spike_df = df[df["급증여부"]].copy()
     n_spike_local = len(spike_df)
-    n_total = len(df)
+    # "모니터링 지역"은 "지금 몇 개 구·군을 보고 있냐"이지 누적 행 수가 아니다.
+    # df에는 급증 판정(전월 대비)을 위해 여러 base_month가 함께 쌓여 있으므로
+    # len(df)를 그대로 쓰면 달이 늘수록 부풀어 오른다 — 최신 base_month
+    # 한 달만 골라 구·군 유니크 개수를 센다. 급증/정상 판정용 df(spike_df 등)는
+    # 여러 달을 다 봐야 하므로 그대로 둔다.
+    latest_month = df["기준월"].max()
+    n_total = df[df["기준월"] == latest_month]["지역구"].nunique()
     # change_rate가 None인 행은 "증감률 0% 미만이라 정상"이 아니라 "전월 비교
     # 데이터 자체가 없어 판정을 못 한 것"이다 — 이 둘을 하나로 뭉쳐 "정상
     # 지역"이라고 부르면 실제로는 아직 아무 판정도 안 된 지역이 안전하다고
@@ -561,22 +566,24 @@ def build_tab_unsold(colors, df, region_label="부산"):
     fig = go.Figure(go.Bar(
         x=bar_df["미분양세대수"], y=bar_df["지역구"], orientation="h",
         marker_color=[colors["danger"] if v else colors["accent"] for v in bar_df["급증여부"]],
-        text=bar_df["증감률"].apply(lambda x: f"{x:+.1f}%" if x else ""),
+        text=bar_df["증감률"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) else ""),
         textposition="outside", textfont=dict(color=colors["text"], size=15),
     ))
     fig.update_layout(**PT, title="구·군별 미분양 세대수  ·  빨간색 = 전월 대비 30%↑",
                       height=560, xaxis=dict(gridcolor=colors["border"]),
                       yaxis=dict(gridcolor=colors["border"]))
 
+    # 월별 추이 선그래프는 base_month가 2개월치뿐이라 점 2개짜리 그래프로는
+    # 유의미한 추이를 보여주지 못해 텍스트 안내 카드로 대체한다 — 데이터가
+    # 쌓이면(매주 자동 갱신) 다시 그래프로 전환할 수 있도록 개월 수는
+    # 실제 base_month 유니크 개수로 동적으로 채운다.
+    n_months = df["기준월"].nunique()
+
     spike_rows = spike_df[["지역구","기준월","미분양세대수","전월세대수","증감률"]].copy()
     spike_rows["증감률"] = spike_rows["증감률"].apply(lambda x: f"{x:+.1f}%")
+    spike_note = None
 
     base_month = df["기준월"].max() if not df.empty else "-"
-    # 급증이 0건인 이유는 대개 "급증이 없어서"가 아니라 "전월 행이 없어 증감률을
-    # 계산하지 못해서"다 (base_month가 API 기준일이 아닌 실행일이라 소급이 안 된다).
-    # 빈 표를 보고 안심하지 않도록 그 사정을 배너에 적어 둔다.
-    spike_note = ("※ 현재 전월 비교 데이터 미수집 — 증감률을 계산할 수 없어 급증 판정이 비어 있습니다"
-                  if n_spike_local == 0 else None)
 
     return html.Div([
         data_banner(
@@ -592,7 +599,14 @@ def build_tab_unsold(colors, df, region_label="부산"):
                             kpi(colors, "급증 타깃", n_spike_local, colors["danger"],
                                 f"전월 대비 {UNSOLD_SPIKE_THRESHOLD_PCT:.0f}%↑"),
                             kpi(colors, "정상", n_normal, colors["ok"], "급증 아님 확인됨")]),
-        html.Div(style={**CARD,"marginBottom":"24px","borderLeft":f"3px solid {colors['danger']}"}, children=[
+        html.Div(style={**CARD,"marginBottom":"24px","minHeight":"40px", "borderLeft":f"3px solid {colors['accent']}"}, children=[
+            html.P("📊  데이터 축적 중",
+                   style={"color":colors["accent"],"fontWeight":"600","margin":"0 0 8px","fontSize":"18px"}),
+            html.P(f"미분양 추이 분석을 위한 데이터가 쌓이고 있습니다 (현재 {n_months}개월치 확보). "
+                   "매주 자동 갱신되며, 데이터가 더 쌓이면 유의미한 추이 그래프로 전환됩니다.",
+                   style={"color":colors["muted"],"margin":0,"fontSize":"15px"}),
+        ]),
+        html.Div(style={**CARD,"marginBottom":"24px","minHeight":"40px", "borderLeft":f"3px solid {colors['danger']}"}, children=[
             html.P("⚠  영업 우선 타깃 — 시공사 교체 또는 분양 전략 변경 가능성 높음",
                    style={"color":colors["danger"],"fontWeight":"600","margin":"0 0 16px","fontSize":"18px"}),
             dash_table.DataTable(data=spike_rows.to_dict("records"),
@@ -669,6 +683,11 @@ def build_tab_price(colors, df, tdf, region_label="전체"):
                             kpi(colors, "최고가 지역구", top_gu),
                             kpi(colors, "총 거래건수", f"{total_d:,}건", colors["accent2"], "최근 3개월")]),
         dcc.Graph(figure=fig_t),
+        # 미분양 탭은 선그래프 자리에 카드 2개(⚠ 영업 우선 타깃 / 📊 데이터 축적 중)가
+        # 들어가 막대그래프 시작 위치가 더 아래다 — 그 차이만큼 스페이서로 맞춘다.
+        # 카드 높이가 텍스트 줄바꿈(급증 지역 유무·문구 길이)에 따라 달라지므로
+        # 박스모델 추정치(≈32px)이며, 실제 화면에서 오차가 보이면 조정이 필요하다.
+        html.Div(style={"height": "25px"}),
         dcc.Graph(figure=fig_bar),
         # LAWD 48121이 창원시 전체가 아니라 의창구만 가리켜 "창원시 의창구"로
         # 저장돼 있다(config.py 참고) — 값 자체는 안 건드리고 각주로만 안내.
@@ -683,21 +702,29 @@ def build_tab_permit(colors, df):
     TABLE_STYLE = get_table_style(colors)
     PT = get_plotly_template(colors)
 
+    # 화면 표시는 최근 12개월로 제한한다 (DB/permit_df 자체는 건드리지 않음 —
+    # 사이드패널 등 다른 소비처는 이 함수를 거치지 않으므로 영향 없다).
+    if not df.empty:
+        parsed = pd.to_datetime(df["인허가일"], errors="coerce")
+        cutoff = pd.Timestamp(date.today()) - pd.DateOffset(months=12)
+        df = df[parsed >= cutoff]
+
     if df.empty:
         summary_block = html.P("데이터 없음", style={"color":colors["muted"]})
     else:
         total_u = int(df["세대수"].sum())
         top_c   = df.groupby("시공사")["세대수"].sum().idxmax()
-        sm = df.groupby("지역구")["세대수"].sum().reset_index().sort_values("세대수", ascending=True)
+        sm = df.groupby("지역구")["세대수"].sum().reset_index().sort_values("세대수", ascending=False)
 
         fig = go.Figure(go.Bar(
-            x=sm["세대수"], y=sm["지역구"], orientation="h",
+            x=sm["지역구"], y=sm["세대수"],
             marker_color=colors["accent"],
             text=sm["세대수"].apply(lambda x: f"{x:,}세대"),
             textposition="outside", textfont=dict(color=colors["text"], size=14),
         ))
         fig.update_layout(**PT, title="구·군별 신규 착공·인허가 세대수", height=560,
-                          xaxis=dict(gridcolor=colors["border"]), yaxis=dict(gridcolor=colors["border"]))
+                          xaxis=dict(gridcolor=colors["border"], tickangle=-45),
+                          yaxis=dict(gridcolor=colors["border"]))
 
         tdf = df.sort_values("인허가일", ascending=False).head(20).copy()
         tdf["인허가일"] = tdf["인허가일"].astype(str)
@@ -724,63 +751,6 @@ def build_tab_permit(colors, df):
             "매주 월요일 07:00 자동 갱신",
         ),
         summary_block,
-
-        # 건축HUB 단지 검색 — 위 permit_df(청약홈 배치 수집)와 완전히 별개로,
-        # 건축HUB 주택인허가정보 서비스를 구·군/동 선택 즉시 조회하는 실시간
-        # 검색 전용 경로다. building_permit.py 배치 수집기는 폐지됐다(데이터
-        # 품질이 낮고 청약홈과 출처 구분도 안 돼 building_permits 테이블에서
-        # 전량 삭제, scheduler.py의 collect_building_permits 호출도 제거) —
-        # 건축HUB는 이제 이 실시간 검색으로만 쓴다.
-        html.Div(style={**CARD,"marginTop":"24px"}, children=[
-            html.P("건축HUB 주택인허가 검색",
-                   style={"color":colors["text"],"fontSize":"21px","fontWeight":"700",
-                          "margin":"0 0 4px"}),
-            html.P("구·군과 동을 선택하면 해당 지역의 주택인허가 정보를 실시간 조회합니다.",
-                   style={"color":colors["muted"],"fontSize":"17px","margin":"0 0 16px"}),
-            html.Div(style={"display":"flex","gap":"12px","flexWrap":"wrap","alignItems":"center"},
-                     children=[
-                dcc.Dropdown(
-                    id="permit-search-gu",
-                    # 부산·울산 사이에 이름이 겹치는 구(중구·남구·동구·북구)가 있어
-                    # region을 라벨에 붙여 구분한다. DISTRICT_TO_REGION은 이름 기준이라
-                    # 겹치는 이름은 마지막에 덮어쓴 부산이 이겨버려 여기엔 못 쓴다 —
-                    # sigunguCd 자체는 겹치지 않으므로 코드 소속으로 직접 판별한다.
-                    options=[
-                        {
-                            "label": f"{'부산' if k in BUSAN_DISTRICT_CODES else '울산' if k in ULSAN_DISTRICT_CODES else '경남'} {v}",
-                            "value": k,
-                        }
-                        for k, v in ALL_DISTRICT_CODES.items()
-                    ],
-                    placeholder="구·군 선택",
-                    style={"width":"160px","fontSize":"18px", "color": "#000000"},
-                    clearable=False,
-                ),
-                dcc.Dropdown(
-                    id="permit-search-dong",
-                    options=[],
-                    placeholder="동 선택",
-                    style={"width":"180px","fontSize":"18px", "color": "#000000"},
-                    clearable=False,
-                ),
-                html.Button("검색", id="permit-search-btn", n_clicks=0,
-                    style={
-                        "backgroundColor": colors["accent"],
-                        "color": "#ffffff",
-                        "border": "none",
-                        "borderRadius": "8px",
-                        "padding": "8px 20px",
-                        "fontSize": "18px",
-                        "fontWeight": "600",
-                        "cursor": "pointer",
-                    }),
-            ]),
-            dcc.Loading(
-                id="permit-search-loading",
-                type="default",
-                children=html.Div(id="permit-search-result", style={"marginTop":"20px"}),
-            ),
-        ]),
     ])
 
 
@@ -797,38 +767,66 @@ def build_region_select_bar(colors):
     Input으로 받아 iframe에 postMessage하는 clientside_callback, 콜백 섹션 참고).
     """
     CARD = get_card_style(colors)
-    return html.Div([
+    NAV_BTN_STYLE = {
+        "backgroundColor": colors["surface2"],
+        "color": colors["text"],
+        "border": f"1px solid {colors['border']}",
+        "borderRadius": "8px",
+        "padding": "8px 16px",
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "cursor": "pointer",
+        "whiteSpace": "nowrap",
+    }
+    return html.Div(
+        style={"position":"sticky", "top":"0", "zIndex":"100",
+               "backgroundColor":colors["surface"], "boxShadow":"0 2px 8px rgba(0,0,0,0.08)"},
+        children=[
         html.Div(style={**CARD, "display":"flex", "gap":"12px", "alignItems":"center",
+                        "justifyContent":"space-between", "flexWrap":"wrap",
                         "marginBottom":"24px"}, children=[
-            dcc.Dropdown(
-                id="region-select",
-                options=[
-                    {"label": "부산광역시", "value": "부산"},
-                    {"label": "울산광역시", "value": "울산"},
-                    {"label": "경상남도",   "value": "경남"},
-                ],
-                value="부산", clearable=False,
-                style={"width":"200px"},
-            ),
-            dcc.Dropdown(
-                id="district-select",
-                options=[], value=None,
-                placeholder="구·군 선택 (선택 안 하면 전체)",
-                style={"width":"200px"},
-            ),
-            html.Button("검색", id="region-search-btn", n_clicks=0,
-                style={
-                    "backgroundColor": colors["accent"],
-                    "color": "#ffffff",
-                    "border": "none",
-                    "borderRadius": "8px",
-                    "padding": "8px 20px",
-                    "fontSize": "18px",
-                    "fontWeight": "600",
-                    "cursor": "pointer",
-                }),
+            html.Div(style={"display":"flex", "gap":"12px", "alignItems":"center"}, children=[
+                dcc.Dropdown(
+                    id="region-select",
+                    options=[
+                        {"label": "부산광역시", "value": "부산"},
+                        {"label": "울산광역시", "value": "울산"},
+                        {"label": "경상남도",   "value": "경남"},
+                    ],
+                    value="부산", clearable=False,
+                    style={"width":"200px"},
+                ),
+                dcc.Dropdown(
+                    id="district-select",
+                    options=[], value=None,
+                    placeholder="구·군 선택 (선택 안 하면 전체)",
+                    style={"width":"200px"},
+                ),
+                html.Button("검색", id="region-search-btn", n_clicks=0,
+                    style={
+                        "backgroundColor": colors["accent"],
+                        "color": "#ffffff",
+                        "border": "none",
+                        "borderRadius": "8px",
+                        "padding": "8px 20px",
+                        "fontSize": "18px",
+                        "fontWeight": "600",
+                        "cursor": "pointer",
+                    }),
+            ]),
+            # 섹션 이동 네비게이션 — 앵커(#id) 대신 clientside_callback +
+            # scrollIntoView를 쓴다. 이 페이지는 해시 라우팅을 쓰지 않는 단일
+            # 페이지라 앵커 자체는 동작하지만, 대상 섹션이 sticky 바 높이만큼
+            # 가려지는 문제(scroll-margin-top으로 보정, 각 섹션 style 참고)를
+            # 일관되게 처리하려면 JS 쪽에서 한 번에 다루는 편이 안정적이다.
+            html.Div(style={"display":"flex", "gap":"8px", "alignItems":"center"}, children=[
+                html.Button("행정구역지도", id="nav-btn-map", n_clicks=0, style=NAV_BTN_STYLE),
+                html.Button("거래가·미분양", id="nav-btn-price-unsold", n_clicks=0, style=NAV_BTN_STYLE),
+                html.Button("착공·허가", id="nav-btn-permit", n_clicks=0, style=NAV_BTN_STYLE),
+            ]),
         ]),
         dcc.Store(id="selected-region-store", data={"region": "부산", "district": None}),
+        dcc.Store(id="scroll-nav-dummy"),
     ])
 
 
@@ -882,17 +880,24 @@ def build_shell():
             html.Div(style={"padding":"24px 32px"}, children=[
                 build_region_select_bar(colors),
 
+                html.H2("🗺️ 행정구역지도", style=SECTION_TITLE_STYLE),
                 build_tab_map(colors),
 
-                html.Div(id="unsold-section", style=SECTION_WRAP_STYLE),
-                html.Div(id="price-section",  style=SECTION_WRAP_STYLE),
-                html.Div(id="permit-section", style=SECTION_WRAP_STYLE),
+                html.Div(id="price-unsold-section",
+                         style={**SECTION_WRAP_STYLE, "display":"grid",
+                                "gridTemplateColumns":"1fr 1fr", "gap":"32px",
+                                "scrollMarginTop":"100px"}, children=[
+                    html.Div(id="price-section"),
+                    html.Div(id="unsold-section"),
+                ]),
+                html.Div(id="permit-section",
+                          style={**SECTION_WRAP_STYLE, "scrollMarginTop":"100px"}),
             ]),
 
             # 푸터
             html.Div(style={"padding":"14px 32px","borderTop":f"1px solid {colors['border']}",
                             "marginTop":"24px","backgroundColor":colors["surface"]}, children=[
-                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API(부산만 제공)  ·  건축HUB 주택인허가 API",
+                html.P("매주 월요일 오전 7시 자동 갱신  ·  국토부 실거래가 API  ·  청약홈 API  ·  부산광역시 미분양현황 API(부산만 제공)",
                        style={"color":colors["muted"],"fontSize":"15px","margin":"0"}),
             ]),
         ]
@@ -1073,6 +1078,40 @@ clientside_callback(
     """,
     Output("selected-region-store", "data", allow_duplicate=True),
     Input("selected-region-store", "data"),
+    prevent_initial_call=True,
+)
+
+
+# 네비게이션 버튼 3개를 각각의 섹션으로 부드럽게 스크롤 이동시킨다.
+# 세 버튼이 하나의 dummy Output(scroll-nav-dummy.data)을 공유하므로 어느
+# 버튼이 눌렸는지는 callback_context로 판별한다. 대상 섹션들은 sticky
+# 지역 선택 바에 가려지지 않도록 scrollMarginTop을 갖고 있다(build_tab_map/
+# build_shell 참고) — scrollIntoView가 이 CSS 값을 자동으로 반영한다.
+clientside_callback(
+    """
+    function(n1, n2, n3) {
+        var ctx = window.dash_clientside.callback_context;
+        if (!ctx.triggered.length) {
+            return window.dash_clientside.no_update;
+        }
+        var triggeredId = ctx.triggered[0].prop_id.split('.')[0];
+        var targetMap = {
+            'nav-btn-map': 'map-section',
+            'nav-btn-price-unsold': 'price-unsold-section',
+            'nav-btn-permit': 'permit-section',
+        };
+        var targetId = targetMap[triggeredId];
+        var el = targetId && document.getElementById(targetId);
+        if (el) {
+            el.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("scroll-nav-dummy", "data"),
+    Input("nav-btn-map", "n_clicks"),
+    Input("nav-btn-price-unsold", "n_clicks"),
+    Input("nav-btn-permit", "n_clicks"),
     prevent_initial_call=True,
 )
 
@@ -1376,105 +1415,6 @@ def map_side_panel(click_data):
                 style={"color":colors["muted"],"padding":"12px","fontSize":"17px"}),
         ]),
     ])
-
-
-# ---------------------------------------------------------------------------
-# 건축HUB 검색 콜백
-# 국토교통부 건축HUB 주택인허가정보 서비스는 이제 이 실시간 검색으로만 사용.
-# (구·군 → 동 선택 후 조회, 배치/자동 수집 없음)
-# ---------------------------------------------------------------------------
-
-@app.callback(
-    Output("permit-search-dong", "options"),
-    Input("permit-search-gu", "value"),
-    prevent_initial_call=True,
-)
-def update_dong_options(sgg_cd):
-    if not sgg_cd:
-        return []
-    if sgg_cd.startswith("26"):
-        dongs = BUSAN_DONG_CODES.get(sgg_cd, {})
-    elif sgg_cd.startswith("31"):
-        dongs = ULSAN_DONG_CODES.get(sgg_cd, {})
-    elif sgg_cd.startswith("48"):
-        dongs = GYEONGNAM_DONG_CODES.get(sgg_cd, {})
-    else:
-        dongs = {}
-    return [{"label": v, "value": k} for k, v in dongs.items()]
-
-
-@app.callback(
-    Output("permit-search-result", "children"),
-    Input("permit-search-btn", "n_clicks"),
-    State("permit-search-gu", "value"),
-    State("permit-search-dong", "value"),
-    prevent_initial_call=True,
-)
-def search_building_permit(n_clicks, sgg_cd, bjdong_cd):
-    colors = LIGHT_COLORS
-    TABLE_STYLE = get_table_style(colors)
-
-    if not sgg_cd or not bjdong_cd:
-        return html.P("구·군과 동을 모두 선택해주세요.",
-                      style={"color": colors["warning"], "fontSize": "18px"})
-
-    from src.config import BUILDING_PERMIT_API_KEY
-    endpoint = "https://apis.data.go.kr/1613000/HsPmsHubService/getHpBasisOulnInfo"
-    params = {
-        "serviceKey": BUILDING_PERMIT_API_KEY,
-        "sigunguCd":  sgg_cd,
-        "bjdongCd":   bjdong_cd,
-        "numOfRows":  100,
-        "pageNo":     1,
-    }
-
-    try:
-        resp = requests.get(endpoint, params=params, timeout=15)
-        resp.raise_for_status()
-        root  = ET.fromstring(resp.text)
-        items = root.findall(".//item")
-
-        if not items:
-            return html.P("해당 지역의 주택인허가 데이터가 없습니다.",
-                          style={"color": colors["muted"], "fontSize": "18px"})
-
-        def t(el, tag):
-            node = el.find(tag)
-            return node.text.strip() if node is not None and node.text else "-"
-
-        rows = []
-        for el in items:
-            approv = t(el, "apprvDay")
-            if len(approv) == 8:
-                approv = f"{approv[:4]}-{approv[4:6]}-{approv[6:]}"
-            rows.append({
-                "단지명":    t(el, "bldNm"),
-                "주소":      t(el, "platPlc"),
-                "세대수":    t(el, "totHhldCnt"),
-                "사업승인일": approv,
-                "착공일":    t(el, "stcnsDay") or "-",
-            })
-
-        total = root.findtext(".//totalCount") or str(len(rows))
-        df = pd.DataFrame(rows)
-
-        return html.Div([
-            html.P(f"조회 결과: {total}건",
-                   style={"color": colors["muted"], "fontSize": "17px", "margin": "0 0 12px"}),
-            dash_table.DataTable(
-                data=df.to_dict("records"),
-                columns=[{"name": c, "id": c} for c in df.columns],
-                **TABLE_STYLE,
-                page_size=20,
-            ),
-        ])
-
-    except requests.exceptions.Timeout:
-        return html.P("요청 시간이 초과됐습니다. 다시 시도해주세요.",
-                      style={"color": colors["danger"], "fontSize": "18px"})
-    except Exception as e:
-        return html.P(f"조회 중 오류가 발생했습니다: {str(e)}",
-                      style={"color": colors["danger"], "fontSize": "18px"})
 
 
 if __name__ == "__main__":

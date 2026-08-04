@@ -17,7 +17,7 @@ from src.db import UnsoldHousing, get_session, init_db
 
 log = logging.getLogger(__name__)
 
-ENDPOINT   = "http://apis.data.go.kr/6260000/UnSellStusService/UnSellStusInfo"
+ENDPOINT   = "https://apis.data.go.kr/6260000/UnSellStusService/UnSellStusInfo"
 PAGE_SIZE  = 1000
 
 
