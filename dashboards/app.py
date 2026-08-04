@@ -566,9 +566,19 @@ def build_tab_unsold(colors, df, region_label="부산"):
     fig = go.Figure(go.Bar(
         x=bar_df["미분양세대수"], y=bar_df["지역구"], orientation="h",
         marker_color=[colors["danger"] if v else colors["accent"] for v in bar_df["급증여부"]],
-        text=bar_df["증감률"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) else ""),
-        textposition="outside", textfont=dict(color=colors["text"], size=15),
     ))
+    # go.Bar의 text=(outside)는 Plotly가 인접 막대와의 겹침을 자동
+    # 판단해 일부를 조용히 숨겨버려(cliponaxis/uniformtext로도 제어 불가) —
+    # 막대 "안쪽" 끝에 흰색 텍스트로 직접 그려 넣어 이 자동 숨김을 우회한다.
+    # x축 range는 그대로 두므로(밖으로 안 나감) 그래프가 늘어지지 않는다.
+    for _, row in bar_df.iterrows():
+        if pd.notna(row["증감률"]):
+            fig.add_annotation(
+                x=row["미분양세대수"], y=row["지역구"],
+                text=f"{row['증감률']:+.1f}%",
+                xanchor="right", xshift=-8, showarrow=False,
+                font=dict(color="#ffffff", size=11),
+            )
     fig.update_layout(**PT, title="구·군별 미분양 세대수  ·  빨간색 = 전월 대비 30%↑",
                       height=560, xaxis=dict(gridcolor=colors["border"]),
                       yaxis=dict(gridcolor=colors["border"]))
